@@ -1,0 +1,13 @@
+# Ignore local database
+time_tracker.db
+time_tracker.db-journal
+
+# Ignore logs
+automator_log.txt
+
+# Ignore Python cache
+__pycache__/
+*.pyc
+
+# Ignore macOS system files
+.DS_Store
