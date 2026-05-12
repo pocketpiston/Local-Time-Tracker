@@ -1,13 +1,25 @@
-# Ignore local database
-time_tracker.db
-time_tracker.db-journal
+# OS Generated Files
+.DS_Store
 
-# Ignore logs
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Database
+*.db
+*.sqlite3
+time_tracker.db
+
+# Logs
+*.log
 automator_log.txt
 
-# Ignore Python cache
-__pycache__/
-*.pyc
+# Virtual Environments
+venv/
+.venv/
+env/
 
-# Ignore macOS system files
-.DS_Store
+# Editor/IDE
+.vscode/
+.idea/

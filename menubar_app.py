@@ -1,7 +1,8 @@
 import rumps
 import db_logic
 import os
-from datetime import datetime
+import re
+from datetime import datetime, timedelta
 
 # Define path for our defaults file
 PROJECTS_FILE = os.path.join(os.path.dirname(__file__), 'projects.txt')
@@ -48,6 +49,16 @@ class TimeTrackerApp(rumps.App):
         self.menu.add(rumps.separator)
         self.menu.add(rumps.MenuItem("Start Custom Project...", callback=self.start_custom_project))
         self.menu.add(rumps.MenuItem("Edit Default Projects...", callback=self.edit_defaults))
+        
+        active = db_logic.get_active_timer()
+        if active:
+            self.menu.add(rumps.separator)
+            self.menu.add(rumps.MenuItem("⏱️ Subtract 5 mins from Start", callback=lambda _: self.adjust_timer(5)))
+            self.menu.add(rumps.MenuItem("⏱️ Subtract 15 mins from Start", callback=lambda _: self.adjust_timer(15)))
+            self.menu.add(rumps.MenuItem("⏱️ Subtract 30 mins from Start", callback=lambda _: self.adjust_timer(30)))
+            self.menu.add(rumps.MenuItem("⏱️ Custom Adjustment...", callback=self.custom_adjust_timer))
+
+        self.menu.add(rumps.separator)
         self.menu.add(rumps.MenuItem("Reload Menu", callback=lambda _: self.build_menu()))
         
         self.menu.add(rumps.separator)
@@ -124,15 +135,68 @@ class TimeTrackerApp(rumps.App):
             self.paused_project = active["project_name"]
             # Silently stop timer in DB with a placeholder description
             db_logic.stop_timer("[Paused]")
-            self.update_ui_state()
+            self.build_menu()
 
-    def _start_timer_logic(self, project_name):
+    def adjust_timer(self, mins):
+        db_logic.adjust_active_start_time(mins)
+        self.build_menu()
+
+    def custom_adjust_timer(self, sender):
+        window = rumps.Window(
+            message="Enter minutes to subtract (e.g. '45' or '15m') OR absolute start time (e.g. '10:30'):",
+            title="Custom Adjustment",
+            default_text="",
+            cancel=True
+        )
+        resp = window.run()
+        if not resp.clicked or not resp.text.strip():
+            return
+            
+        val = resp.text.strip().lower()
+        active = db_logic.get_active_timer()
+        if not active: return
+        
+        start_time_dt = datetime.fromisoformat(active["start_time"])
+        now = datetime.now()
+        
+        try:
+            mins = int(val)
+            start_time_dt -= timedelta(minutes=mins)
+            db_logic.set_active_start_time(start_time_dt.isoformat())
+            self.build_menu()
+            return
+        except ValueError:
+            pass
+            
+        m_time = re.match(r'^(\d{1,2}):(\d{2})$', val)
+        if m_time:
+            hours = int(m_time.group(1))
+            minutes = int(m_time.group(2))
+            start_time_dt = start_time_dt.replace(hour=hours, minute=minutes, second=0, microsecond=0)
+            if start_time_dt > now:
+                start_time_dt -= timedelta(days=1)
+            
+            db_logic.set_active_start_time(start_time_dt.isoformat())
+            self.build_menu()
+            return
+            
+        m_mins = re.match(r'^(\d+)\s*m(?:ins?|inutes?)?$', val)
+        if m_mins:
+            mins = int(m_mins.group(1))
+            start_time_dt -= timedelta(minutes=mins)
+            db_logic.set_active_start_time(start_time_dt.isoformat())
+            self.build_menu()
+            return
+            
+        rumps.alert("Invalid Input", "Please enter a number of minutes (e.g. 45) or a time (e.g. 10:30).")
+
+    def _start_timer_logic(self, project_name, start_time=None):
         self.paused_project = None # Clear any pause state
         if db_logic.get_active_timer():
             self.stop_project_timer(None, force=True)
             
-        db_logic.start_timer(project_name)
-        self.update_ui_state()
+        db_logic.start_timer(project_name, start_time)
+        self.build_menu()
 
     def stop_project_timer(self, sender, force=False):
         was_paused = self.paused_project is not None
@@ -159,7 +223,7 @@ class TimeTrackerApp(rumps.App):
             # Stop the active timer normally
             db_logic.stop_timer(description)
             
-        self.update_ui_state()
+        self.build_menu()
 
 if __name__ == "__main__":
     app = TimeTrackerApp()

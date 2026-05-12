@@ -20,10 +20,11 @@ def init_db():
     conn.commit()
     conn.close()
 
-def start_timer(project_name):
+def start_timer(project_name, start_time=None):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    start_time = datetime.datetime.now().isoformat()
+    if start_time is None:
+        start_time = datetime.datetime.now().isoformat()
     # Insert new log
     cursor.execute('''
         INSERT INTO time_logs (project_name, start_time, is_active)
@@ -78,6 +79,33 @@ def get_last_ended_timer():
     if row:
         return {"project_name": row[0], "end_time": row[1]}
     return None
+
+def adjust_active_start_time(mins_to_subtract):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT id, start_time FROM time_logs WHERE is_active = ?
+    ''', (True,))
+    row = cursor.fetchone()
+    if row:
+        log_id, start_time_str = row
+        import datetime
+        dt = datetime.datetime.fromisoformat(start_time_str)
+        new_dt = dt - datetime.timedelta(minutes=mins_to_subtract)
+        cursor.execute('''
+            UPDATE time_logs SET start_time = ? WHERE id = ?
+        ''', (new_dt.isoformat(), log_id))
+        conn.commit()
+    conn.close()
+
+def set_active_start_time(new_start_time_iso):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute('''
+        UPDATE time_logs SET start_time = ? WHERE is_active = ?
+    ''', (new_start_time_iso, True))
+    conn.commit()
+    conn.close()
 
 # Initialize db when imported
 init_db()

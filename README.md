@@ -63,6 +63,9 @@ The Streamlit dashboard acts as your "back office." You only need to run this wh
    streamlit run timesheet_dashboard.py
    ```
 3. A browser window will automatically open with your timesheets. 
+   * **Editing:** Double-click any cell in the table to correct typos, descriptions, or project names.
+   * **Adding/Deleting:** Click the faded bottom row to manually add missing time logs, or highlight a row and press `Delete` to remove it.
+   * **Saving (Crucial):** Your edits are NOT permanent until you click the **"Save Changes to Database"** button below the table!
 4. **To Quit:** Once you are done reviewing your data, click inside your terminal and press `Control + C` to shut down the server.
 
 ### 3. Customizing Projects

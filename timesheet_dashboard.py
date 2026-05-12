@@ -25,26 +25,51 @@ def load_data():
         
     return df
 
-def save_data(edited_df):
+def save_data(original_df, edited_df):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    for index, row in edited_df.iterrows():
-        # Handle potentially NaT/NaN values
-        start_time = row['start_time'].isoformat() if pd.notnull(row['start_time']) else None
-        end_time = row['end_time'].isoformat() if pd.notnull(row['end_time']) else None
+    
+    # 1. Handle DELETIONS
+    # Any ID that was in original_df but is missing from edited_df got deleted
+    if not original_df.empty:
+        original_ids = set(original_df['id'].dropna().astype(int))
+    else:
+        original_ids = set()
         
-        cursor.execute('''
-            UPDATE time_logs 
-            SET project_name = ?, start_time = ?, end_time = ?, description = ?, is_active = ?
-            WHERE id = ?
-        ''', (
-            row['project_name'], 
-            start_time, 
-            end_time, 
-            row['description'], 
-            bool(row['is_active']),
-            row['id']
-        ))
+    if not edited_df.empty:
+        current_ids = set(edited_df['id'].dropna().astype(int))
+    else:
+        current_ids = set()
+        
+    deleted_ids = original_ids - current_ids
+    for d_id in deleted_ids:
+        cursor.execute('DELETE FROM time_logs WHERE id = ?', (int(d_id),))
+        
+    # 2. Handle UPDATES and INSERTIONS
+    if not edited_df.empty:
+        for index, row in edited_df.iterrows():
+            # Clean up all types to avoid Pandas NaT/NaN SQLite crashes
+            proj = str(row['project_name']) if pd.notna(row['project_name']) else ""
+            desc = str(row['description']) if pd.notna(row['description']) else ""
+            is_active = bool(row['is_active']) if pd.notna(row['is_active']) else False
+            
+            start_time = row['start_time'].isoformat() if pd.notna(row['start_time']) else None
+            end_time = row['end_time'].isoformat() if pd.notna(row['end_time']) else None
+            
+            if pd.isna(row['id']):
+                # This is a brand new row added via the UI
+                cursor.execute('''
+                    INSERT INTO time_logs (project_name, start_time, end_time, description, is_active)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (proj, start_time, end_time, desc, is_active))
+            else:
+                # Update an existing row
+                cursor.execute('''
+                    UPDATE time_logs 
+                    SET project_name = ?, start_time = ?, end_time = ?, description = ?, is_active = ?
+                    WHERE id = ?
+                ''', (proj, start_time, end_time, desc, is_active, int(row['id'])))
+                
     conn.commit()
     conn.close()
 
@@ -56,7 +81,7 @@ st.write("Edit the table below to correct any typos or timestamps. Changes requi
 edited_df = st.data_editor(df, num_rows="dynamic", key="data_editor", use_container_width=True)
 
 if st.button("Save Changes to Database"):
-    save_data(edited_df)
+    save_data(df, edited_df)
     st.success("Changes successfully saved to the database!")
     st.rerun()
 
