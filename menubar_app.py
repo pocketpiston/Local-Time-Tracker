@@ -1,4 +1,5 @@
 import rumps
+import subprocess
 import db_logic
 import os
 import re
@@ -33,6 +34,12 @@ class TimeTrackerApp(rumps.App):
         super(TimeTrackerApp, self).__init__("⏱️ Idle")
         self.paused_project = None
         self.build_menu()
+        # Auto-refresh title every 60 seconds to keep elapsed time current
+        self.timer = rumps.Timer(self.tick, 60)
+        self.timer.start()
+
+    def tick(self, sender):
+        self.update_ui_state()
 
     def build_menu(self):
         self.menu.clear()
@@ -84,7 +91,15 @@ class TimeTrackerApp(rumps.App):
         if active:
             proj = active["project_name"]
             start_str = format_time(active["start_time"])
-            self.title = f"⏱️ {proj}"
+            # Show elapsed time in the menu bar
+            try:
+                start_dt = datetime.fromisoformat(active["start_time"])
+                elapsed = datetime.now() - start_dt
+                hours, remainder = divmod(int(elapsed.total_seconds()), 3600)
+                mins = remainder // 60
+                self.title = f"⏱️ {proj} ({hours}h {mins}m)"
+            except Exception:
+                self.title = f"⏱️ {proj}"
             self.status_item.title = f"Started: {start_str}"
         else:
             self.title = "⏱️ Idle"
@@ -111,8 +126,8 @@ class TimeTrackerApp(rumps.App):
             self._start_timer_logic(response.text.strip())
 
     def edit_defaults(self, sender):
-        # Open the text file in the user's default text editor
-        os.system(f'open "{PROJECTS_FILE}"')
+        # Open the text file in the user's default text editor (safe subprocess call)
+        subprocess.run(["open", PROJECTS_FILE])
         rumps.alert(
             title="Edit Defaults",
             message="I've opened the projects.txt file for you.\n\nEdit the file, save it, and click OK here. Your menu will instantly update!"
@@ -138,7 +153,12 @@ class TimeTrackerApp(rumps.App):
             self.build_menu()
 
     def adjust_timer(self, mins):
-        db_logic.adjust_active_start_time(mins)
+        active = db_logic.get_active_timer()
+        if not active:
+            return
+        dt = datetime.fromisoformat(active["start_time"])
+        new_dt = dt - timedelta(minutes=mins)
+        db_logic.set_active_start_time(new_dt.isoformat())
         self.build_menu()
 
     def custom_adjust_timer(self, sender):
@@ -192,7 +212,18 @@ class TimeTrackerApp(rumps.App):
 
     def _start_timer_logic(self, project_name, start_time=None):
         self.paused_project = None # Clear any pause state
-        if db_logic.get_active_timer():
+        active = db_logic.get_active_timer()
+        if active:
+            # Confirm before switching to a different project
+            if active["project_name"] != project_name:
+                resp = rumps.alert(
+                    title="Timer Already Running",
+                    message=f"'{active['project_name']}' is currently being tracked.\nSwitch to '{project_name}'?",
+                    ok="Switch",
+                    cancel="Cancel"
+                )
+                if resp != 1:  # User cancelled
+                    return
             self.stop_project_timer(None, force=True)
             
         db_logic.start_timer(project_name, start_time)
