@@ -15,8 +15,8 @@ def load_data():
     
     if not df.empty:
         # Convert string to datetime objects
-        df['start_time'] = pd.to_datetime(df['start_time'])
-        df['end_time'] = pd.to_datetime(df['end_time'])
+        df['start_time'] = pd.to_datetime(df['start_time'], format='ISO8601')
+        df['end_time'] = pd.to_datetime(df['end_time'], format='ISO8601')
         
         # Calculate duration in hours
         df['duration_hours'] = (df['end_time'] - df['start_time']).dt.total_seconds() / 3600.0
@@ -55,6 +55,12 @@ def save_data(original_df, edited_df):
             
             start_time = row['start_time'].isoformat() if pd.notna(row['start_time']) else None
             end_time = row['end_time'].isoformat() if pd.notna(row['end_time']) else None
+            
+            # Check if row is essentially empty
+            if not proj.strip() and start_time is None and end_time is None and not desc.strip():
+                if not pd.isna(row['id']):
+                    cursor.execute('DELETE FROM time_logs WHERE id = ?', (int(row['id']),))
+                continue
             
             if pd.isna(row['id']):
                 # This is a brand new row added via the UI
