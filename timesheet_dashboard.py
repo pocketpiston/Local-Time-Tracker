@@ -29,70 +29,216 @@ st.markdown("""
         padding-bottom: 2rem;
     }
     
-    /* Style metric cards — light, clean, high contrast */
+    /* Style metric cards — high contrast, darker greys */
     [data-testid="stMetric"] {
-        background: #f0f2f6;
-        border: 1px solid #d1d5db;
+        background: #e5e7eb;
+        border: 1px solid #4b5563;
         border-radius: 12px;
         padding: 1rem 1.25rem;
-        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
     }
     [data-testid="stMetricLabel"] {
         font-size: 0.8rem;
         text-transform: uppercase;
         letter-spacing: 0.05em;
-        color: #6b7280 !important;
+        color: #1f2937 !important;
+        font-weight: 600;
     }
     [data-testid="stMetricValue"] {
         font-size: 1.6rem;
         font-weight: 700;
-        color: #111827 !important;
+        color: #000000 !important;
     }
-    
+
     /* Dark mode overrides */
     @media (prefers-color-scheme: dark) {
         [data-testid="stMetric"] {
-            background: #1e1e2e;
-            border-color: #3b3b4f;
+            background: #18181b;
+            border-color: #71717a;
         }
         [data-testid="stMetricLabel"] {
-            color: #a1a1aa !important;
+            color: #e4e4e7 !important;
         }
         [data-testid="stMetricValue"] {
-            color: #f4f4f5 !important;
+            color: #ffffff !important;
         }
     }
     /* Streamlit dark theme class override */
     [data-testid="stAppViewContainer"][data-theme="dark"] [data-testid="stMetric"],
     .stApp[data-theme="dark"] [data-testid="stMetric"] {
-        background: #1e1e2e;
-        border-color: #3b3b4f;
+        background: #18181b;
+        border-color: #71717a;
     }
-    
-    /* Divider styling */
+
+    /* Divider styling — darker for visibility */
     hr {
         border: none;
-        border-top: 1px solid #e5e7eb;
+        border-top: 1px solid #6b7280;
         margin: 2rem 0;
     }
-    
+
     /* Tab styling */
     .stTabs [data-baseweb="tab-list"] {
         gap: 0.5rem;
+        border-bottom: 1px solid #6b7280;
     }
     .stTabs [data-baseweb="tab"] {
         border-radius: 8px;
         padding: 0.5rem 1rem;
+        color: #1f2937;
+        font-weight: 500;
     }
-    
-    /* Preview box styling */
+
+    /* Preview box styling — darker grey */
     .preview-box {
-        background: #f0f2f6;
-        border: 1px solid #d1d5db;
+        background: #e5e7eb;
+        border: 1px solid #4b5563;
         border-radius: 8px;
         padding: 0.75rem 1rem;
         margin: 0.5rem 0;
-        color: #111827;
+        color: #000000;
+    }
+
+    /* Form container — darker outline */
+    [data-testid="stForm"] {
+        border: 1px solid #4b5563 !important;
+        border-radius: 12px !important;
+        padding: 1.25rem !important;
+    }
+
+    /* Selectbox, time input, and multiselect wrappers (single border only) */
+    [data-baseweb="select"] > div:first-child {
+        border: 1px solid #4b5563 !important;
+        border-radius: 8px !important;
+    }
+
+    /* Date input wrapper */
+    [data-testid="stDateInput"] > div > div {
+        border: 1px solid #4b5563 !important;
+        border-radius: 8px !important;
+    }
+
+    /* Text input wrapper (base-input) */
+    [data-testid="stTextInput"] [data-baseweb="base-input"],
+    [data-testid="stTextInput"] [data-baseweb="input"] {
+        border: 1px solid #4b5563 !important;
+        border-radius: 8px !important;
+    }
+    [data-testid="stTextInput"] input {
+        border: none !important;
+    }
+
+    /* Checkbox box — visible border */
+    [data-testid="stCheckbox"] [data-baseweb="checkbox"] span:first-child,
+    [data-testid="stCheckbox"] label > div:first-child {
+        border: 1px solid #374151 !important;
+    }
+
+    /* Multiselect tag chips — darker outline */
+    [data-baseweb="tag"] {
+        border: 1px solid #374151 !important;
+    }
+
+    /* Dataframe & data editor — darker grid borders */
+    [data-testid="stDataFrame"],
+    [data-testid="stDataEditor"],
+    [data-testid="stDataFrameResizable"] {
+        border: 1px solid #4b5563 !important;
+        border-radius: 8px !important;
+        /* Glide Data Grid CSS variables — internal grid lines */
+        --gdg-border-color: #374151;
+        --gdg-horizontal-border-color: #374151;
+        --gdg-bg-header: #d1d5db;
+        --gdg-text-header: #111827;
+        --gdg-text-dark: #111827;
+    }
+    [data-testid="stDataFrame"] [role="columnheader"],
+    [data-testid="stDataEditor"] [role="columnheader"] {
+        background: #d1d5db !important;
+        color: #111827 !important;
+        font-weight: 600 !important;
+        border-bottom: 1px solid #4b5563 !important;
+    }
+
+    /* Secondary buttons — darker border */
+    [data-testid="stButton"] button:not([kind="primary"]) {
+        border: 1px solid #4b5563 !important;
+    }
+
+    /* Dark mode for everything above */
+    @media (prefers-color-scheme: dark) {
+        [data-testid="stForm"],
+        [data-baseweb="select"] > div:first-child,
+        [data-testid="stDateInput"] > div > div,
+        [data-testid="stTextInput"] [data-baseweb="base-input"],
+        [data-testid="stTextInput"] [data-baseweb="input"],
+        [data-testid="stDataFrame"],
+        [data-testid="stDataEditor"],
+        [data-testid="stDataFrameResizable"],
+        [data-testid="stButton"] button:not([kind="primary"]) {
+            border-color: #71717a !important;
+        }
+        [data-testid="stCheckbox"] [data-baseweb="checkbox"] span:first-child,
+        [data-testid="stCheckbox"] label > div:first-child,
+        [data-baseweb="tag"] {
+            border-color: #a1a1aa !important;
+        }
+        [data-testid="stDataFrame"] [role="columnheader"],
+        [data-testid="stDataEditor"] [role="columnheader"] {
+            background: #27272a !important;
+            color: #f4f4f5 !important;
+            border-bottom-color: #71717a !important;
+        }
+        [data-testid="stDataFrame"],
+        [data-testid="stDataEditor"],
+        [data-testid="stDataFrameResizable"] {
+            --gdg-border-color: #a1a1aa;
+            --gdg-horizontal-border-color: #a1a1aa;
+            --gdg-bg-header: #27272a;
+            --gdg-text-header: #f4f4f5;
+            --gdg-text-dark: #f4f4f5;
+        }
+    }
+
+    /* Radio button circles — darker borders for visibility */
+    [data-baseweb="radio"] div[role="radio"],
+    [data-testid="stRadio"] label > div:first-child,
+    [data-testid="stRadio"] [data-baseweb="radio"] > div:first-child {
+        border: 1px solid #374151 !important;
+    }
+    @media (prefers-color-scheme: dark) {
+        [data-baseweb="radio"] div[role="radio"],
+        [data-testid="stRadio"] label > div:first-child,
+        [data-testid="stRadio"] [data-baseweb="radio"] > div:first-child {
+            border-color: #d4d4d8 !important;
+        }
+    }
+
+    /* Text area styling — prominent border, no focus glow */
+    [data-testid="stTextArea"] textarea {
+        border: 1px solid #4b5563 !important;
+        border-radius: 8px !important;
+        padding: 0.75rem !important;
+        font-size: 0.95rem !important;
+        line-height: 1.5 !important;
+        white-space: pre-wrap !important;
+        word-wrap: break-word !important;
+        overflow-wrap: break-word !important;
+    }
+    [data-testid="stTextArea"] textarea:focus {
+        border-color: #2563eb !important;
+        box-shadow: none !important;
+        outline: none !important;
+    }
+    @media (prefers-color-scheme: dark) {
+        [data-testid="stTextArea"] textarea {
+            border-color: #71717a !important;
+        }
+        [data-testid="stTextArea"] textarea:focus {
+            border-color: #3b82f6 !important;
+            box-shadow: none !important;
+            outline: none !important;
+        }
     }
 </style>
 """, unsafe_allow_html=True)
@@ -413,7 +559,12 @@ with tab_add:
             project_options = existing_projects + ["— Custom —"]
             selected_project = st.selectbox("Project", project_options, key="manual_project")
             entry_date = st.date_input("Date", value=datetime.date.today(), key="manual_date")
-            description = st.text_input("Description", placeholder="What did you work on?", key="manual_desc")
+            description = st.text_area(
+                "Description",
+                placeholder="What did you work on?",
+                key="manual_desc",
+                height=250,
+            )
         
         with form_col2:
             start_time_input = st.time_input("Start Time", value=datetime.time(9, 0), key="manual_start")
