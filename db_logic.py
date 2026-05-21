@@ -56,6 +56,34 @@ def stop_timer(description):
             WHERE id = (SELECT MAX(id) FROM time_logs WHERE is_active = 1)
         ''', (end_time, description))
 
+def resume_paused_timer():
+    """Reopen the most recent paused row: clear end_time/description, set is_active=1.
+    Preserves the original start_time so elapsed time spans the pause gap."""
+    with get_db() as (conn, cursor):
+        cursor.execute('''
+            UPDATE time_logs
+            SET end_time = NULL, description = NULL, is_active = 1
+            WHERE id = (
+                SELECT MAX(id) FROM time_logs
+                WHERE is_active = 0 AND description = '[Paused]'
+            )
+        ''')
+
+def get_paused_timer():
+    """Return the latest row if it is a paused one and no active timer exists.
+    Used on app startup to restore in-memory pause state."""
+    with get_db() as (conn, cursor):
+        cursor.execute('''
+            SELECT project_name, start_time FROM time_logs
+            WHERE id = (SELECT MAX(id) FROM time_logs)
+              AND is_active = 0
+              AND description = '[Paused]'
+        ''')
+        row = cursor.fetchone()
+        if row:
+            return {"project_name": row[0], "start_time": row[1]}
+        return None
+
 def update_last_description(description):
     with get_db() as (conn, cursor):
         cursor.execute('''

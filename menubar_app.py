@@ -33,6 +33,10 @@ class TimeTrackerApp(rumps.App):
     def __init__(self):
         super(TimeTrackerApp, self).__init__("⏱️ Idle")
         self.paused_project = None
+        # Restore pause state if the app was quit mid-pause
+        paused = db_logic.get_paused_timer()
+        if paused:
+            self.paused_project = paused["project_name"]
         self.build_menu()
         # Auto-refresh title every 60 seconds to keep elapsed time current
         self.timer = rumps.Timer(self.tick, 60)
@@ -136,17 +140,17 @@ class TimeTrackerApp(rumps.App):
 
     def toggle_pause(self, sender):
         if self.paused_project:
-            # Resume
-            project_to_resume = self.paused_project
+            # Resume by reopening the paused row so the original start_time is preserved
             self.paused_project = None
-            self._start_timer_logic(project_to_resume)
+            db_logic.resume_paused_timer()
+            self.build_menu()
         else:
             # Pause
             active = db_logic.get_active_timer()
             if not active:
                 rumps.alert("No active timer to pause.")
                 return
-            
+
             self.paused_project = active["project_name"]
             # Silently stop timer in DB with a placeholder description
             db_logic.stop_timer("[Paused]")
