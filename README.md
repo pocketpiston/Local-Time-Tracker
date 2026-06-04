@@ -25,13 +25,18 @@ The system is composed of three decoupled components running entirely on your lo
      * Summary section displaying total duration hours grouped by project via bar charts.
      * Export functionality to download the timesheet view as a CSV or Parquet file for final submission.
 
+4. **Invoice Generator (`generate_invoice.py`)**
+   * CLI script that turns a month of time logs into a filled-in copy of the Mehaffey Consulting billing template.
+   * Groups entries by day + project + auto-classified item code (`Meeting` / `Drafting` / `Research`), sums hours (rounded to the nearest 0.25), and joins descriptions.
+   * Preserves the template's rate, GST, and total formulas — outputs to `./invoices/` for review before sending.
+
 ## Prerequisites
 
 * macOS
 * Python 3.x
 * Required Python libraries:
   ```bash
-  pip install rumps streamlit pandas
+  pip install rumps streamlit pandas openpyxl
   ```
 
 ## Usage
@@ -68,5 +73,32 @@ The Streamlit dashboard acts as your "back office." You only need to run this wh
    * **Saving (Crucial):** Your edits are NOT permanent until you click the **"Save Changes to Database"** button below the table!
 4. **To Quit:** Once you are done reviewing your data, click inside your terminal and press `Control + C` to shut down the server.
 
-### 3. Customizing Projects
+### 3. Generating a Monthly Invoice (`generate_invoice.py`)
+Run this once a month to produce a filled-in copy of the Mehaffey Consulting billing template.
+
+**One-time setup:**
+The template path is hardcoded near the top of `generate_invoice.py`:
+```python
+TEMPLATE_PATH = Path("/Users/.../Mehaffy Billing Template.xlsx")
+```
+Edit that constant if the OneDrive path ever changes. Optionally edit `EXCLUDE_PROJECTS` to skip projects you don't want billed (e.g. `["Personal Projects"]`).
+
+**Run it:**
+1. Open your terminal and navigate to the project folder.
+2. Run for the previous calendar month (the usual case):
+   ```bash
+   python3 generate_invoice.py
+   ```
+   …or specify a month explicitly:
+   ```bash
+   python3 generate_invoice.py --month 2026-05
+   ```
+3. The script prints the output path and a summary (line item count, total hours). The file lands in `./invoices/Mehaffey Invoice INV-YYYY-MM.xlsx` (this folder is gitignored).
+4. **Open the file in Excel and review** — the script auto-classifies each row's Item code from keywords in the description (`meeting` → Meeting, `draft`/`document` → Drafting, else Research). Eyeball each row, adjust anything wrong, then send.
+
+**Other flags:**
+* `--month last` — explicit form of the default (previous month)
+* `--out /some/path.xlsx` — override the output location
+
+### 4. Customizing Projects
 You can customize the preset projects directly from the menu bar app by clicking **"Edit Default Projects..."**. This will open a text file where you can add or remove presets. Once saved, click "OK" on the alert prompt, and your menu will instantly refresh!

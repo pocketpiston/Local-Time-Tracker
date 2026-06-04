@@ -20,6 +20,9 @@ venv/
 .venv/
 env/
 
+# Generated invoices (keep out of git — they contain billing info)
+invoices/
+
 # Editor/IDE
 .vscode/
 .idea/
