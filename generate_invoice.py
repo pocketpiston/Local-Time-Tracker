@@ -226,10 +226,15 @@ def render_invoice(entries: list[dict], year: int, month: int, out_path: Path) -
         for col in ("A", "B", "C", "D"):
             ws[f"{col}{r}"] = None
 
-    # Fill rows
+    # Fill rows. Write the date as a real date value (not a string) and force the
+    # display format to dd/mm/yyyy. The template inherits mm/dd/yyyy from the original
+    # author, which makes Excel mis-parse text strings like "25/05/2026" (month 25 is
+    # invalid) and render them blank. A real date + explicit dd/mm/yyyy format renders
+    # correctly regardless of locale.
     for i, e in enumerate(entries):
         r = FIRST_ITEM_ROW + i
-        ws[f"A{r}"] = e["date"].strftime("%d/%m/%Y")
+        ws[f"A{r}"] = e["date"]  # datetime.date object
+        ws[f"A{r}"].number_format = "dd/mm/yyyy"
         ws[f"B{r}"] = e["item"]
         ws[f"C{r}"] = e["description"]
         ws[f"D{r}"] = e["hours"]
