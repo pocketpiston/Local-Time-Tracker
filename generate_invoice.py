@@ -7,12 +7,16 @@ Usage:
     python generate_invoice.py --month 2026-05 --out /tmp/foo.xlsx
 
 Behavior:
-  - Reads completed time logs from time_tracker.db for the chosen month.
-  - Groups by (date, project, item_code) and sums hours; descriptions joined with "; ".
+  - Reads completed time logs from time_tracker.db whose [start,end) overlaps the month.
+  - Cross-midnight sessions are split per calendar day; cross-month sessions are clipped
+    so only the in-month portion is billed.
+  - Groups by (date, project, item_code) and sums hours; descriptions joined with spaces.
+  - Hours always round UP to the nearest 0.1h (6 min). No bucket ever rounds to zero.
+  - Spillover < SPILLOVER_THRESHOLD_HOURS (0.15h) is folded back to the start day.
   - Item code is auto-classified from the description:
-        "meeting"       -> Meeting
-        "draft|document"-> Drafting
-        otherwise       -> Research
+        "meeting"          -> Meeting
+        "draft*|document*" -> Drafting (covers drafted/drafting/documented/documentation)
+        otherwise          -> Research
   - Copies the OneDrive template and fills in the line items, invoice #, and date.
   - Hourly rate, GST, and totals are template formulas — they stay live.
   - Output saved to ./invoices/Mehaffey Invoice INV-YYYY-MM.xlsx unless --out is given.
@@ -22,6 +26,7 @@ Behavior:
 import argparse
 import calendar
 import datetime as dt
+import math
 import re
 import shutil
 import sqlite3
@@ -53,6 +58,11 @@ EXCLUDE_PROJECTS: list[str] = []
 
 OUTPUT_DIR = HERE / "invoices"
 
+# Sessions that cross midnight are split between calendar days. If the post-midnight
+# spillover is shorter than this threshold, fold those hours back into the start day
+# instead of creating a tiny line item on the next day. 0.15h ~= 9 minutes.
+SPILLOVER_THRESHOLD_HOURS = 0.15
+
 FIRST_ITEM_ROW = 14
 LAST_ITEM_ROW = 63  # template has 50 line-item rows (14..63)
 INVOICE_NUM_CELL = "E3"
@@ -63,16 +73,19 @@ def classify(description: str) -> str:
     d = (description or "").lower()
     if "meeting" in d:
         return "Meeting"
-    if re.search(r"\b(draft|drafting|document|documenting|documentation)\b", d):
+    if re.search(r"\b(draft\w*|document\w*)\b", d):
         return "Drafting"
     return "Research"
 
 
-def month_bounds(year: int, month: int) -> tuple[str, str]:
+def month_bounds(year: int, month: int) -> tuple[dt.datetime, dt.datetime]:
+    """Return (month_start, next_month_start) as naive datetimes — used for clipping."""
     start = dt.datetime(year, month, 1)
-    last_day = calendar.monthrange(year, month)[1]
-    end = dt.datetime(year, month, last_day, 23, 59, 59, 999999)
-    return start.isoformat(), end.isoformat()
+    if month == 12:
+        next_start = dt.datetime(year + 1, 1, 1)
+    else:
+        next_start = dt.datetime(year, month + 1, 1)
+    return start, next_start
 
 
 def previous_month(today: dt.date) -> tuple[int, int]:
@@ -93,9 +106,11 @@ def parse_month_arg(value: str, today: dt.date) -> tuple[int, int]:
     return y, mo
 
 
-def fetch_entries(year: int, month: int) -> list[tuple[str, str, str, str]]:
-    """Return rows (project, start_iso, end_iso, description) for the month."""
-    start_iso, end_iso = month_bounds(year, month)
+def fetch_entries(month_start: dt.datetime, next_month_start: dt.datetime) -> list[tuple[str, str, str, str]]:
+    """Return rows (project, start_iso, end_iso, description) for any session whose
+    [start, end) interval overlaps the month. Cross-boundary sessions are clipped
+    in aggregate_by_day so only the in-month portion is billed.
+    """
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.cursor()
         cur.execute(
@@ -103,17 +118,37 @@ def fetch_entries(year: int, month: int) -> list[tuple[str, str, str, str]]:
             SELECT project_name, start_time, end_time, COALESCE(description, '')
             FROM time_logs
             WHERE end_time IS NOT NULL
-              AND start_time >= ?
-              AND start_time <= ?
+              AND start_time < ?
+              AND end_time > ?
             ORDER BY start_time
             """,
-            (start_iso, end_iso),
+            (next_month_start.isoformat(), month_start.isoformat()),
         )
         return cur.fetchall()
 
 
-def aggregate_by_day(rows) -> list[dict]:
-    """Group by (date, project, item_code). Returns list sorted by date then project."""
+def split_by_calendar_day(start: dt.datetime, end: dt.datetime):
+    """Yield (date, hours) chunks so each calendar day gets only the time worked on it.
+
+    A session 23:05 → 00:12 returns (start.date(), 0.91h), (start.date()+1, 0.21h).
+    """
+    cur = start
+    while cur < end:
+        next_midnight = dt.datetime.combine(cur.date() + dt.timedelta(days=1), dt.time())
+        chunk_end = min(end, next_midnight)
+        hours = (chunk_end - cur).total_seconds() / 3600.0
+        if hours > 0:
+            yield cur.date(), hours
+        cur = chunk_end
+
+
+def aggregate_by_day(rows, month_start: dt.datetime, next_month_start: dt.datetime) -> list[dict]:
+    """Group by (date, project, item_code). Returns list sorted by date then project.
+
+    Sessions that cross midnight are split so each calendar day gets only its share.
+    Sessions are clipped to [month_start, next_month_start) so cross-month bleed-over
+    is never billed on the wrong invoice.
+    """
     buckets: dict[tuple, dict] = defaultdict(
         lambda: {"hours": 0.0, "descs": []}
     )
@@ -124,20 +159,34 @@ def aggregate_by_day(rows) -> list[dict]:
             continue
         start = dt.datetime.fromisoformat(start_iso)
         end = dt.datetime.fromisoformat(end_iso)
-        hours = (end - start).total_seconds() / 3600.0
-        if hours <= 0:
+        # Clip to month bounds so cross-boundary sessions only contribute their
+        # in-month portion to this invoice.
+        start = max(start, month_start)
+        end = min(end, next_month_start)
+        if end <= start:
             continue
         item = classify(desc)
-        key = (start.date(), project, item)
-        b = buckets[key]
-        b["hours"] += hours
         clean = desc.strip()
-        if clean and clean not in b["descs"]:
-            b["descs"].append(clean)
+        chunks = list(split_by_calendar_day(start, end))
+        if not chunks:
+            continue
+        primary_day = chunks[0][0]
+        for i, (day, hours) in enumerate(chunks):
+            is_spillover = i > 0
+            # Fold sub-threshold spillover back into the start-day bucket; skip its
+            # description so the receiving day doesn't get cluttered with prior-day text.
+            if is_spillover and hours < SPILLOVER_THRESHOLD_HOURS:
+                buckets[(primary_day, project, item)]["hours"] += hours
+                continue
+            b = buckets[(day, project, item)]
+            b["hours"] += hours
+            if clean and clean not in b["descs"]:
+                b["descs"].append(clean)
 
     out = []
     for (day, project, item), b in sorted(buckets.items(), key=lambda kv: (kv[0][0], kv[0][1], kv[0][2])):
-        hours = round(b["hours"] * 4) / 4  # round to nearest quarter hour
+        # Always round UP to nearest 0.1h (6 min). Bucket has >0 raw hours, so result is ≥0.1h.
+        hours = math.ceil(b["hours"] * 10) / 10
         if hours <= 0:
             continue
         joined = " ".join(b["descs"])
@@ -197,14 +246,15 @@ def render_invoice(entries: list[dict], year: int, month: int, out_path: Path) -
 def main() -> None:
     p = argparse.ArgumentParser(description="Generate Mehaffey monthly invoice from time tracker DB.")
     p.add_argument("--month", default="last", help="YYYY-MM or 'last' (default: previous month)")
-    p.add_argument("--out", type=Path, default=None, help="Output xlsx path (default: next to template)")
+    p.add_argument("--out", type=Path, default=None, help="Output xlsx path (default: ./invoices/Mehaffey Invoice INV-YYYY-MM.xlsx)")
     args = p.parse_args()
 
     today = dt.date.today()
     year, month = parse_month_arg(args.month, today)
+    month_start, next_month_start = month_bounds(year, month)
 
-    rows = fetch_entries(year, month)
-    entries = aggregate_by_day(rows)
+    rows = fetch_entries(month_start, next_month_start)
+    entries = aggregate_by_day(rows, month_start, next_month_start)
 
     if not entries:
         print(f"No billable entries found for {year}-{month:02d}.")
