@@ -40,6 +40,14 @@ TEMPLATE_PATH = Path(
     "[01] Admin/[01] Billing/Mehaffy Billing Template.xlsx"
 )
 
+# OneDrive destination — a final copy lands here in the folder's own MMYYYY naming style.
+# Set to None to skip the second copy.
+ONEDRIVE_INVOICES_DIR = Path(
+    "/Users/joewu/Library/CloudStorage/OneDrive-Personal/Documents/"
+    "[01] Current Documents/[03] Freelance Work/[01] Mehaffey Consulting/"
+    "[01] Admin/[01] Billing/[01] Invoices"
+)
+
 # Edit this list to skip projects you don't want billed (e.g. "Personal Projects").
 EXCLUDE_PROJECTS: list[str] = []
 
@@ -215,6 +223,17 @@ def main() -> None:
     print(f"  Month: {year}-{month:02d}")
     print(f"  Line items: {len(entries)}")
     print(f"  Total hours: {total_hours:.2f}")
+
+    # Mirror to the OneDrive Invoices folder using its MMYYYY naming convention.
+    if ONEDRIVE_INVOICES_DIR is not None and args.out is None:
+        if ONEDRIVE_INVOICES_DIR.exists():
+            onedrive_name = f"Joe - Mehaffey Invoice {month:02d}{year:04d}.xlsx"
+            onedrive_path = ONEDRIVE_INVOICES_DIR / onedrive_name
+            shutil.copy(out_path, onedrive_path)
+            print(f"  Mirrored to: {onedrive_path}")
+        else:
+            print(f"  (skip mirror — OneDrive folder not found: {ONEDRIVE_INVOICES_DIR})", file=sys.stderr)
+
     print("  Review the file in Excel before sending — adjust Item codes / descriptions as needed.")
 
 

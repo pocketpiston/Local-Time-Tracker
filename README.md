@@ -93,7 +93,7 @@ Edit that constant if the OneDrive path ever changes. Optionally edit `EXCLUDE_P
    ```bash
    python3 generate_invoice.py --month 2026-05
    ```
-3. The script prints the output path and a summary (line item count, total hours). The file lands in `./invoices/Mehaffey Invoice INV-YYYY-MM.xlsx` (this folder is gitignored).
+3. The script prints the output path and a summary (line item count, total hours). The file lands in `./invoices/Mehaffey Invoice INV-YYYY-MM.xlsx` (this folder is gitignored). It also mirrors a copy to the OneDrive Invoices folder using its own naming convention (`Joe - Mehaffey Invoice MMYYYY.xlsx`). Set `ONEDRIVE_INVOICES_DIR = None` in the script to skip the mirror; passing `--out` also skips it.
 4. **Open the file in Excel and review** — the script auto-classifies each row's Item code from keywords in the description (`meeting` → Meeting, `draft`/`document` → Drafting, else Research). Eyeball each row, adjust anything wrong, then send.
 
 **Other flags:**
