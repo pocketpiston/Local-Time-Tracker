@@ -321,6 +321,27 @@ def save_data(original_df, edited_df):
 # ── Load Data ───────────────────────────────────────────────────────
 df = load_data()
 
+# ── Sidebar: Hourly Rate ────────────────────────────────────────────
+with st.sidebar:
+    st.subheader("💰 Billing")
+    show_revenue = st.checkbox(
+        "Show estimated revenue",
+        value=False,
+        key="show_revenue",
+    )
+    if show_revenue:
+        hourly_rate = st.number_input(
+            "Hourly Rate ($)",
+            min_value=0.0,
+            value=st.session_state.get("hourly_rate", 150.0),
+            step=5.0,
+            format="%.2f",
+            key="hourly_rate",
+            help="Used to estimate revenue from logged hours.",
+        )
+    else:
+        hourly_rate = 0.0
+
 # ── Page Header ─────────────────────────────────────────────────────
 header_col1, header_col2 = st.columns([5, 1])
 with header_col1:
@@ -351,11 +372,23 @@ if not df.empty:
         today_start_utc = now.tz_localize(local_tz).tz_convert('UTC')
         today = completed[compare_times >= today_start_utc]
         
-        q1, q2, q3, q4 = st.columns(4)
-        q1.metric("Today", f"{today['duration_hours'].sum():.1f}h")
-        q2.metric("This Week", f"{this_week['duration_hours'].sum():.1f}h")
-        q3.metric("All Time", f"{completed['duration_hours'].sum():.1f}h")
-        q4.metric("Total Entries", f"{len(completed)}")
+        today_hours = today['duration_hours'].sum()
+        week_hours = this_week['duration_hours'].sum()
+        all_hours = completed['duration_hours'].sum()
+
+        if show_revenue:
+            q1, q2, q3, q4, q5 = st.columns(5)
+            q1.metric("Today", f"{today_hours:.1f}h", f"${today_hours * hourly_rate:,.0f}", delta_color="off")
+            q2.metric("This Week", f"{week_hours:.1f}h", f"${week_hours * hourly_rate:,.0f}", delta_color="off")
+            q3.metric("All Time", f"{all_hours:.1f}h", f"${all_hours * hourly_rate:,.0f}", delta_color="off")
+            q4.metric("Total Entries", f"{len(completed)}")
+            q5.metric("Est. Revenue (All)", f"${all_hours * hourly_rate:,.0f}")
+        else:
+            q1, q2, q3, q4 = st.columns(4)
+            q1.metric("Today", f"{today_hours:.1f}h")
+            q2.metric("This Week", f"{week_hours:.1f}h")
+            q3.metric("All Time", f"{all_hours:.1f}h")
+            q4.metric("Total Entries", f"{len(completed)}")
         
         st.divider()
 
@@ -466,11 +499,20 @@ with tab_summary:
                 entries_count = len(filtered_df)
                 avg_daily = total_hours / max((filtered_df['start_time'].max() - filtered_df['start_time'].min()).days, 1)
                 
-                mcol1, mcol2, mcol3, mcol4 = st.columns(4)
-                mcol1.metric("Total Hours", f"{total_hours:.1f}h")
-                mcol2.metric("Top Project", most_active_project)
-                mcol3.metric("Entries", entries_count)
-                mcol4.metric("Avg / Day", f"{avg_daily:.1f}h")
+                if show_revenue:
+                    est_revenue = total_hours * hourly_rate
+                    mcol1, mcol2, mcol3, mcol4, mcol5 = st.columns(5)
+                    mcol1.metric("Total Hours", f"{total_hours:.1f}h")
+                    mcol2.metric("Est. Revenue", f"${est_revenue:,.0f}")
+                    mcol3.metric("Top Project", most_active_project)
+                    mcol4.metric("Entries", entries_count)
+                    mcol5.metric("Avg / Day", f"{avg_daily:.1f}h")
+                else:
+                    mcol1, mcol2, mcol3, mcol4 = st.columns(4)
+                    mcol1.metric("Total Hours", f"{total_hours:.1f}h")
+                    mcol2.metric("Top Project", most_active_project)
+                    mcol3.metric("Entries", entries_count)
+                    mcol4.metric("Avg / Day", f"{avg_daily:.1f}h")
                 
                 st.write("")  # spacing
                 
@@ -542,6 +584,48 @@ with tab_logs:
         save_data(df, edited_df)
         st.success("Changes saved!")
         st.rerun()
+
+    # ── Long-form description editor ───────────────────────────────
+    # The data_editor's TextColumn is single-line and closes on Enter — use this
+    # for multi-line descriptions instead.
+    st.divider()
+    st.subheader("✏️ Edit Description (long-form)")
+
+    editable = df.dropna(subset=['id']).copy()
+    if editable.empty:
+        st.caption("No saved entries to edit yet.")
+    else:
+        editable = editable.sort_values('start_time', ascending=False, na_position='last')
+
+        def _row_label(row):
+            ts = row['start_time'].strftime('%Y-%m-%d %H:%M') if pd.notna(row['start_time']) else 'no start'
+            proj = row['project_name'] if pd.notna(row['project_name']) else '—'
+            return f"#{int(row['id'])} · {proj} · {ts}"
+
+        row_options = {_row_label(r): int(r['id']) for _, r in editable.iterrows()}
+        selected_label = st.selectbox(
+            "Select entry",
+            options=list(row_options.keys()),
+            key="longform_select",
+        )
+        selected_id = row_options[selected_label]
+        current_desc = editable.loc[editable['id'] == selected_id, 'description'].iloc[0]
+        current_desc = '' if pd.isna(current_desc) else str(current_desc)
+
+        new_desc = st.text_area(
+            "Description",
+            value=current_desc,
+            height=250,
+            key=f"longform_desc_{selected_id}",
+        )
+
+        if st.button("💾 Save Description", type="primary", key="longform_save"):
+            conn = sqlite3.connect(DB_NAME)
+            conn.execute('UPDATE time_logs SET description = ? WHERE id = ?', (new_desc, selected_id))
+            conn.commit()
+            conn.close()
+            st.success(f"Updated description for entry #{selected_id}.")
+            st.rerun()
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
