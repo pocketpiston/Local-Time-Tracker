@@ -121,6 +121,18 @@ def set_active_start_time(new_start_time_iso):
             WHERE id = (SELECT MAX(id) FROM time_logs WHERE is_active = 1)
         ''', (new_start_time_iso,))
 
+def add_manual_log(project_name, hours, description="", end_time=None):
+    """Insert a completed (non-active) entry whose duration is `hours` hours,
+    ending at end_time (defaults to now)."""
+    if end_time is None:
+        end_time = datetime.datetime.now()
+    start_time = end_time - datetime.timedelta(hours=hours)
+    with get_db() as (conn, cursor):
+        cursor.execute('''
+            INSERT INTO time_logs (project_name, start_time, end_time, description, is_active)
+            VALUES (?, ?, ?, ?, 0)
+        ''', (project_name, start_time.isoformat(), end_time.isoformat(), description, False))
+
 def get_all_active_timers():
     """Return all rows where is_active = True. Should normally be 0 or 1.
     Useful for debugging orphaned timer issues."""

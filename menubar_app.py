@@ -59,6 +59,15 @@ class TimeTrackerApp(rumps.App):
             
         self.menu.add(rumps.separator)
         self.menu.add(rumps.MenuItem("Start Custom Project...", callback=self.start_custom_project))
+
+        # Manual hours entry — one submenu item per project + custom
+        log_hours_menu = rumps.MenuItem("➕ Log Hours Manually")
+        for proj in self.projects:
+            log_hours_menu.add(rumps.MenuItem(proj, callback=self.log_hours_for_project))
+        log_hours_menu.add(rumps.separator)
+        log_hours_menu.add(rumps.MenuItem("Custom Project...", callback=self.log_hours_custom_project))
+        self.menu.add(log_hours_menu)
+
         self.menu.add(rumps.MenuItem("Edit Default Projects...", callback=self.edit_defaults))
         
         active = db_logic.get_active_timer()
@@ -167,7 +176,7 @@ class TimeTrackerApp(rumps.App):
 
     def custom_adjust_timer(self, sender):
         window = rumps.Window(
-            message="Enter minutes to subtract (e.g. '45' or '15m') OR absolute start time (e.g. '10:30'):",
+            message="Enter minutes/hours to subtract (e.g. '45', '15m', '2h', '1.5h') OR absolute start time (e.g. '10:30'):",
             title="Custom Adjustment",
             default_text="",
             cancel=True
@@ -175,14 +184,14 @@ class TimeTrackerApp(rumps.App):
         resp = window.run()
         if not resp.clicked or not resp.text.strip():
             return
-            
+
         val = resp.text.strip().lower()
         active = db_logic.get_active_timer()
         if not active: return
-        
+
         start_time_dt = datetime.fromisoformat(active["start_time"])
         now = datetime.now()
-        
+
         try:
             mins = int(val)
             start_time_dt -= timedelta(minutes=mins)
@@ -191,7 +200,7 @@ class TimeTrackerApp(rumps.App):
             return
         except ValueError:
             pass
-            
+
         m_time = re.match(r'^(\d{1,2}):(\d{2})$', val)
         if m_time:
             hours = int(m_time.group(1))
@@ -199,11 +208,19 @@ class TimeTrackerApp(rumps.App):
             start_time_dt = start_time_dt.replace(hour=hours, minute=minutes, second=0, microsecond=0)
             if start_time_dt > now:
                 start_time_dt -= timedelta(days=1)
-            
+
             db_logic.set_active_start_time(start_time_dt.isoformat())
             self.build_menu()
             return
-            
+
+        m_hours = re.match(r'^(\d+(?:\.\d+)?)\s*h(?:ours?|rs?)?$', val)
+        if m_hours:
+            hours = float(m_hours.group(1))
+            start_time_dt -= timedelta(hours=hours)
+            db_logic.set_active_start_time(start_time_dt.isoformat())
+            self.build_menu()
+            return
+
         m_mins = re.match(r'^(\d+)\s*m(?:ins?|inutes?)?$', val)
         if m_mins:
             mins = int(m_mins.group(1))
@@ -211,8 +228,60 @@ class TimeTrackerApp(rumps.App):
             db_logic.set_active_start_time(start_time_dt.isoformat())
             self.build_menu()
             return
-            
-        rumps.alert("Invalid Input", "Please enter a number of minutes (e.g. 45) or a time (e.g. 10:30).")
+
+        rumps.alert("Invalid Input", "Please enter minutes (e.g. 45 or 15m), hours (e.g. 2h or 1.5h), or a time (e.g. 10:30).")
+
+    def log_hours_for_project(self, sender):
+        self._log_hours_flow(sender.title)
+
+    def log_hours_custom_project(self, sender):
+        window = rumps.Window(
+            message="Enter custom project name:",
+            title="Log Hours — Project",
+            default_text="",
+            cancel=True,
+        )
+        response = window.run()
+        if response.clicked and response.text.strip():
+            self._log_hours_flow(response.text.strip())
+
+    def _log_hours_flow(self, project_name):
+        window = rumps.Window(
+            message=f"Enter hours for '{project_name}' (e.g. 5.5):",
+            title="Log Hours",
+            default_text="",
+            cancel=True,
+        )
+        resp = window.run()
+        if not resp.clicked or not resp.text.strip():
+            return
+
+        try:
+            hours = float(resp.text.strip())
+        except ValueError:
+            rumps.alert("Invalid Input", "Please enter a number of hours (e.g. 5.5).")
+            return
+
+        if hours <= 0:
+            rumps.alert("Invalid Input", "Hours must be greater than 0.")
+            return
+
+        desc_window = rumps.Window(
+            message=f"Description for {hours}h on '{project_name}' (optional):",
+            title="Log Hours — Description",
+            default_text="",
+            cancel=False,
+        )
+        desc_resp = desc_window.run()
+        description = desc_resp.text.strip() if desc_resp.clicked else ""
+
+        db_logic.add_manual_log(project_name, hours, description)
+        rumps.notification(
+            title="Hours Logged",
+            subtitle=project_name,
+            message=f"Added {hours}h ending now.",
+        )
+        self.build_menu()
 
     def _start_timer_logic(self, project_name, start_time=None):
         self.paused_project = None # Clear any pause state
