@@ -131,7 +131,7 @@ def add_manual_log(project_name, hours, description="", end_time=None):
         cursor.execute('''
             INSERT INTO time_logs (project_name, start_time, end_time, description, is_active)
             VALUES (?, ?, ?, ?, 0)
-        ''', (project_name, start_time.isoformat(), end_time.isoformat(), description, False))
+        ''', (project_name, start_time.isoformat(), end_time.isoformat(), description))
 
 def get_all_active_timers():
     """Return all rows where is_active = True. Should normally be 0 or 1.

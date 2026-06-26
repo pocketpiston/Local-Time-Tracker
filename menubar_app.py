@@ -275,11 +275,18 @@ class TimeTrackerApp(rumps.App):
         desc_resp = desc_window.run()
         description = desc_resp.text.strip() if desc_resp.clicked else ""
 
-        db_logic.add_manual_log(project_name, hours, description)
-        rumps.notification(
+        try:
+            db_logic.add_manual_log(project_name, hours, description)
+        except Exception as e:
+            rumps.alert(
+                title="Save Failed",
+                message=f"Could not save manual entry for '{project_name}'.\n\n{type(e).__name__}: {e}",
+            )
+            return
+
+        rumps.alert(
             title="Hours Logged",
-            subtitle=project_name,
-            message=f"Added {hours}h ending now.",
+            message=f"Added {hours}h to '{project_name}' ending now.",
         )
         self.build_menu()
 
