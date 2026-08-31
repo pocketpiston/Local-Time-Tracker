@@ -561,12 +561,82 @@ with tab_summary:
 # TAB: Time Logs
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 with tab_logs:
-    st.caption("Double-click any cell to edit. Add rows at the bottom, delete by selecting and pressing `Delete`.")
-    
+    st.caption("Click a column header to sort. Double-click any cell to edit, or select a row and press `Delete` to remove it. New entries go in the **➕ Add Entry** tab.")
+
+    # ── Date filter ────────────────────────────────────────────────
+    # start_time is stored naive-local, so compare against naive-local bounds.
+    logs_filter = st.radio(
+        "Filter By",
+        ["All Time", "Month", "Custom Range"],
+        horizontal=True,
+        key="logs_filter",
+    )
+
+    logs_start = None
+    logs_end = None
+    filter_sig = "all"
+
+    if logs_filter == "Month":
+        month_periods = (
+            df['start_time'].dropna().dt.to_period('M').unique()
+            if not df.empty else []
+        )
+        sorted_periods = sorted(month_periods, reverse=True)
+        month_labels = [p.strftime("%B %Y") for p in sorted_periods]
+        if not month_labels:
+            month_labels = [pd.Timestamp.now().strftime("%B %Y")]
+        picked_month = st.selectbox("Select Month", month_labels, key="logs_month")
+        period = pd.Period(picked_month, freq='M')
+        logs_start = period.start_time
+        logs_end = period.end_time
+        filter_sig = f"month:{picked_month}"
+
+    elif logs_filter == "Custom Range":
+        today = pd.Timestamp.now().normalize()
+        picked = st.date_input(
+            "Select Date Range",
+            value=(today.replace(day=1).date(), today.date()),
+            key="logs_custom",
+        )
+        if isinstance(picked, tuple) and len(picked) == 2:
+            logs_start = pd.Timestamp(picked[0])
+            logs_end = pd.Timestamp(picked[1]) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+        elif isinstance(picked, tuple) and len(picked) == 1:
+            logs_start = pd.Timestamp(picked[0])
+            logs_end = logs_start + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+        else:
+            logs_start = pd.Timestamp(picked)
+            logs_end = logs_start + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+        filter_sig = f"custom:{logs_start}:{logs_end}"
+
+    logs_df = df.copy()
+    if logs_start is not None:
+        logs_df = logs_df[
+            logs_df['start_time'].notna()
+            & (logs_df['start_time'] >= logs_start)
+            & (logs_df['start_time'] <= logs_end)
+        ]
+
+    # Default to chronological order; click any column header to re-sort.
+    logs_df = logs_df.sort_values(
+        'start_time', ascending=True, na_position='last'
+    ).reset_index(drop=True)
+
+    if logs_start is not None:
+        shown_hours = logs_df['duration_hours'].sum()
+        st.caption(
+            f"Showing **{len(logs_df)}** of {len(df)} entries · "
+            f"{logs_start.strftime('%b %d, %Y')} – {logs_end.strftime('%b %d, %Y')} · "
+            f"**{shown_hours:.1f}h**"
+        )
+
     edited_df = st.data_editor(
-        df, 
-        num_rows="dynamic", 
-        key="data_editor", 
+        logs_df,
+        # "delete" (not "dynamic") — Streamlit disables column-header sorting
+        # whenever row-adding is enabled. Add entries via the "Add Entry" tab.
+        num_rows="delete",
+        # Key includes the filter so stale cell edits don't bleed across views
+        key=f"data_editor_{filter_sig}",
         width="stretch",
         column_config={
             "id": st.column_config.NumberColumn("ID", width="small", disabled=True),
@@ -581,7 +651,9 @@ with tab_logs:
     )
     
     if st.button("💾 Save Changes", type="primary", use_container_width=True):
-        save_data(df, edited_df)
+        # Compare against the filtered view only — passing the full df here would
+        # treat every row outside the current filter as a deletion.
+        save_data(logs_df, edited_df)
         st.success("Changes saved!")
         st.rerun()
 
@@ -589,7 +661,17 @@ with tab_logs:
     # The data_editor's TextColumn is single-line and closes on Enter — use this
     # for multi-line descriptions instead.
     st.divider()
-    st.subheader("✏️ Edit Description (long-form)")
+
+    lf_head, lf_refresh = st.columns([5, 1])
+    with lf_head:
+        st.subheader("✏️ Edit Description (long-form)")
+    with lf_refresh:
+        st.write("")  # spacing
+        if st.button("🔄 Reload", key="longform_refresh", use_container_width=True):
+            # Drop cached text_area state so every entry re-reads from the DB
+            for k in [k for k in st.session_state if k.startswith(("longform_desc_", "longform_snap_"))]:
+                del st.session_state[k]
+            st.rerun()
 
     editable = df.dropna(subset=['id']).copy()
     if editable.empty:
@@ -612,11 +694,20 @@ with tab_logs:
         current_desc = editable.loc[editable['id'] == selected_id, 'description'].iloc[0]
         current_desc = '' if pd.isna(current_desc) else str(current_desc)
 
+        # Streamlit ignores `value` once a widget key exists in session_state, so a
+        # description changed elsewhere (data editor, menu bar app) would show stale
+        # text. Snapshot the DB value and drop the cached widget state when it moves.
+        desc_key = f"longform_desc_{selected_id}"
+        snap_key = f"longform_snap_{selected_id}"
+        if st.session_state.get(snap_key) != current_desc:
+            st.session_state.pop(desc_key, None)
+            st.session_state[snap_key] = current_desc
+
         new_desc = st.text_area(
             "Description",
             value=current_desc,
             height=250,
-            key=f"longform_desc_{selected_id}",
+            key=desc_key,
         )
 
         if st.button("💾 Save Description", type="primary", key="longform_save"):
@@ -624,6 +715,7 @@ with tab_logs:
             conn.execute('UPDATE time_logs SET description = ? WHERE id = ?', (new_desc, selected_id))
             conn.commit()
             conn.close()
+            st.session_state[snap_key] = new_desc
             st.success(f"Updated description for entry #{selected_id}.")
             st.rerun()
 
