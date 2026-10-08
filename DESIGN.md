@@ -57,20 +57,29 @@ a size breakpoint*, not two modes to switch between.
 
 ## 4. The responsive window
 
-`BREAKPOINT_H = 260`. Below that height the window packs `CompactView`; at or
-above it, `ExpandedView`. Both read the same state dict from `refresh()`, so
-behaviour cannot diverge between them.
+Short window packs `CompactView`, tall packs `ExpandedView`. Both read the same
+state dict from `refresh()`, so behaviour cannot diverge between them. You can
+drag the edge, or double-click the window background to snap between the two.
 
-Three non-obvious things this required:
+**Hysteresis, not a debounce.** The first build waited 120 ms after the last
+resize event before swapping. It was correct and it felt broken: all the way
+down a drag you watched the tall layout get squashed and clipped, and the swap
+only landed once you released the mouse. It now swaps the moment a threshold is
+crossed, with a dead zone so hovering on the edge doesn't flicker:
 
-- **Debounced swapping** (`RESIZE_DEBOUNCE = 120 ms`) so dragging across the
-  threshold doesn't thrash.
-- **A stale-job cancel.** `_on_configure` must drop a pending job *before*
-  returning early. Without that, a decision made during startup fires later and
-  clobbers the correct layout.
-- **A readiness gate.** While mapping, Tk reports transient heights well under
-  the real one. Acting on those opened the window compact for a beat on every
-  launch, then snapped. `_on_map` waits for the window to settle first.
+```
+h < COLLAPSE_BELOW (250)   -> compact
+h > EXPAND_ABOVE   (290)   -> expanded
+in between                 -> keep whatever is showing
+```
+
+**A readiness gate** is still needed. While mapping, Tk reports transient
+heights well under the real one; acting on those opened the window compact for
+a beat on every launch, then snapped. `_on_map` waits for the window to settle.
+
+**The double-click toggle binds to inert surfaces only** — frames and plain
+labels, never the canvas buttons (a quick double-press of Stop would fire it)
+and never entry fields (it would break double-click-to-select-a-word).
 
 Window geometry and the always-on-top setting persist to
 `.timer_app_settings.json`, so it reopens the way it was left.
@@ -163,6 +172,16 @@ A second consequence is surfaced as a warning. The item code comes from
 `classify(desc)` — keywords in the notes. So **what you type can split the day
 into two buckets**, each rounding separately. When that is about to happen the
 dialog says so.
+
+A third only showed up on a later audit. `day_bucket()` originally attributed a
+whole session to its start date, but the invoice **splits a session that runs
+past midnight across both calendar days**, folding a spillover shorter than
+`SPILLOVER_THRESHOLD_HOURS` back into the start day. The database holds five
+such sessions, so the figure was wrong for every one of them. `day_shares()`
+now reuses the invoice's own `split_by_calendar_day` and threshold rather than
+approximating them, and the dialog names the day it is billing and explains the
+spill. Verified against `aggregate_by_day` across 88 buckets over five months,
+with no mismatches.
 
 **The time is editable** because the database asked for it. Several entries carry
 corrections written into the notes — *"Adjust to 2 hr 15 min for total session"*,

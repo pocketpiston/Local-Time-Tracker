@@ -142,7 +142,11 @@ A standalone window for when the menu bar isn't usable — on a MacBook Pro the 
 cd /Users/joewu/Batcave/Local-Time-Tracker && python3 timer_app.py
 ```
 
-**It resizes between two layouts.** Drag the window short (under 260px tall) and it collapses to a one-line bar — clock, project, Pause/Stop — small enough to park in a screen corner with *Always on top*. Pull it tall and it expands to the full panel. It's one window with a size breakpoint, not two modes to switch between, and it reopens at whatever size you left it.
+**It resizes between two layouts.** Drag the window short and it collapses to a one-line bar — clock, project, Pause/Stop — small enough to park in a screen corner with *Always on top*. Pull it tall and it expands to the full panel. It's one window with a size breakpoint, not two modes to switch between, and it reopens at whatever size you left it.
+
+Two ways to switch:
+* **Drag the bottom edge.** It collapses below 250px and expands above 290px, swapping as you drag. The gap between those two numbers is deliberate — it stops the layout flickering when you hover right on the boundary.
+* **Double-click the window background** (or the clock, or the totals) to snap straight between the two. It remembers your tall height, so toggling back restores the size you had.
 
 **What's in the window:**
 * Big live elapsed-time readout plus the current project and start time.

@@ -25,17 +25,30 @@ import db_logic
 
 # Billing rules are imported, never reimplemented, so the figures shown here
 # cannot drift away from what generate_invoice.py actually puts on the invoice.
-from generate_invoice import EXCLUDE_PROJECTS, classify
+from generate_invoice import (EXCLUDE_PROJECTS, SPILLOVER_THRESHOLD_HOURS,
+                              classify, split_by_calendar_day)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROJECTS_FILE = os.path.join(HERE, 'projects.txt')
 SETTINGS_FILE = os.path.join(HERE, '.timer_app_settings.json')
 
 POLL_MS = 1000       # re-read the DB every second so external changes show up
-BREAKPOINT_H = 260   # below this window height the layout collapses to the bar
-RESIZE_DEBOUNCE = 120
+
+# Layout swapping uses a hysteresis band rather than a timed debounce: collapse
+# below COLLAPSE_BELOW, expand above EXPAND_ABOVE, and hold whatever you have
+# in between. Swapping on the spot keeps a drag feeling live — a debounce left
+# the old layout squashed and clipped until the mouse was released — while the
+# dead zone stops it flickering when you hover right on the boundary.
+COLLAPSE_BELOW = 250
+EXPAND_ABOVE = 290
+BREAKPOINT_H = 260   # single threshold, used only to pick the opening layout
+COMPACT_HEIGHT = 152
+SETTLE_MS = 360
 DEFAULT_GEOMETRY = "430x530"
 DEFAULT_HEIGHT = 530
+# A single session longer than a day is a typo, not a work session. Bounding it
+# also keeps datetime arithmetic away from OverflowError on a mistyped figure.
+MAX_SESSION_HOURS = 24
 
 # ── Design tokens ───────────────────────────────────────────────────
 T = {
@@ -371,6 +384,30 @@ def period_totals():
     return today_h, week_h
 
 
+def day_shares(start, end):
+    """[(day, hours)] for one session, the way the invoice apportions it.
+
+    A session running past midnight is billed across both calendar days, except
+    that a spillover shorter than the threshold folds back into the start day
+    rather than becoming a tiny line of its own. Attributing the whole session
+    to its start date instead would misstate every overnight session.
+    """
+    chunks = list(split_by_calendar_day(start, end))
+    if not chunks:
+        return []
+    primary = chunks[0][0]
+    shares = {}
+    for i, (day, hours) in enumerate(chunks):
+        target = primary if (i > 0 and hours < SPILLOVER_THRESHOLD_HOURS) else day
+        shares[target] = shares.get(target, 0.0) + hours
+    return sorted(shares.items())
+
+
+def session_share(start, end, day):
+    """Hours of one session that the invoice would bill on `day`."""
+    return next((h for d, h in day_shares(start, end) if d == day), 0.0)
+
+
 def day_bucket(project, day, item_code=None):
     """Raw hours already logged for (day, project) — optionally one item code.
 
@@ -385,16 +422,34 @@ def day_bucket(project, day, item_code=None):
             continue
         try:
             start = datetime.datetime.fromisoformat(s)
-            hours = (datetime.datetime.fromisoformat(e) - start).total_seconds() / 3600.0
+            end = datetime.datetime.fromisoformat(e)
         except (TypeError, ValueError):
             continue
-        if hours <= 0 or start.date() != day:
+        if end <= start:
+            continue
+        share = session_share(start, end, day)
+        if share <= 0:
             continue
         code = classify(desc or "")
         codes.add(code)
         if item_code is None or code == item_code:
-            total += hours
+            total += share
     return total, codes
+
+
+def bind_double_click(widget, command):
+    """Bind a double-click across a view's inert surfaces.
+
+    Frames and plain labels only: binding the canvas buttons would fire the
+    toggle on a quick double press of Stop, and binding entry fields would
+    break double-click-to-select-a-word.
+    """
+    if isinstance(widget, (tk.Frame, tk.Label)):
+        widget.bind("<Double-Button-1>", lambda _e: command(), add="+")
+    for child in widget.winfo_children():
+        if isinstance(child, (tk.Entry, tk.Text, tk.Canvas)):
+            continue
+        bind_double_click(child, command)
 
 
 def fmt_elapsed(delta):
@@ -637,6 +692,10 @@ class StopDialog(Dialog):
         if hours <= 0:
             self.lbl_err.config(text="Duration must be greater than 0.")
             return
+        if hours > MAX_SESSION_HOURS:
+            self.lbl_err.config(
+                text=f"That's over {MAX_SESSION_HOURS} h — check the figure.")
+            return
         self.end_dt = self.start_dt + datetime.timedelta(hours=hours)
         self.lbl_err.config(text="")
         self.in_end.delete(0, "end")
@@ -665,18 +724,27 @@ class StopDialog(Dialog):
 
         day = self.start_dt.date()
         prior_same_code, codes_today = day_bucket(self.project, day, item_code=code)
-        bucket_raw = prior_same_code + session_h
+        # Only the part of this session the invoice bills on `day` — an
+        # overnight session is split across two days, not heaped on the first.
+        shares = day_shares(self.start_dt, self.end_dt)
+        this_day = session_share(self.start_dt, self.end_dt, day)
+        bucket_raw = prior_same_code + this_day
         self.lbl_bucket.config(
-            text=f"{self.project} today:  {bucket_raw:.2f} h  →  "
+            text=f"{self.project} {day:%b %-d}:  {bucket_raw:.2f} h  →  "
                  f"{billable(bucket_raw):.1f} h billable", fg=T["text"])
 
         bits = []
         if prior_same_code > 0:
-            bits.append(f"Includes {prior_same_code:.2f} h already logged today "
+            bits.append(f"Includes {prior_same_code:.2f} h already logged that day "
                         f"under {code}. The 0.1 h round-up applies to the day's "
                         f"total, not to each session.")
         else:
             bits.append("Rounded up to the next 0.1 h, the way the invoice does it.")
+        spill = [(d, h) for d, h in shares if d != day]
+        if spill:
+            parts = ", ".join(f"{h:.2f} h on {d:%b %-d}" for d, h in spill)
+            bits.append(f"This session runs past midnight, so the invoice bills "
+                        f"{parts} as a separate line.")
         other = codes_today - {code}
         if other:
             bits.append(f"⚠ Today also has {', '.join(sorted(other))} time on this "
@@ -734,6 +802,11 @@ class LogHoursDialog(Dialog):
             return
         if hours <= 0:
             self.lbl_err.config(text="Hours must be greater than 0.")
+            return
+        if hours > MAX_SESSION_HOURS:
+            self.lbl_err.config(
+                text=f"That's over {MAX_SESSION_HOURS} h — check the figure, "
+                     f"or split it across days.")
             return
         self.result = (project, hours, self.desc.get("1.0", "end").strip())
         self.destroy()
@@ -927,6 +1000,8 @@ class TimerApp:
 
         self.expanded = ExpandedView(root, self)
         self.compact = CompactView(root, self)
+        for view in (self.expanded, self.compact):
+            bind_double_click(view, self.toggle_size)
         self.apply_topmost()
 
         root.bind("<Configure>", self._on_configure)
@@ -942,12 +1017,30 @@ class TimerApp:
         before it snaps to the right one — a visible flash on every launch.
         """
         if not self._ready:
-            self.root.after(RESIZE_DEBOUNCE * 3, self._mark_ready)
+            self.root.after(SETTLE_MS, self._mark_ready)
 
     def _mark_ready(self):
         self._ready = True
         want = "expanded" if self.root.winfo_height() >= BREAKPOINT_H else "compact"
         self._set_layout(want)
+
+    def toggle_size(self):
+        """Snap between the two sizes — bound to a double-click on the window."""
+        if self._layout == "expanded":
+            self.settings["geometry"] = self.root.winfo_geometry()
+            save_settings(self.settings)
+            self.root.geometry(f"{max(self.root.winfo_width(), 430)}x{COMPACT_HEIGHT}")
+            self._set_layout("compact")
+        else:
+            spec = self.settings.get("geometry", DEFAULT_GEOMETRY)
+            try:
+                tall = int(re.split(r'[+-]', spec.split("x")[1])[0])
+            except (ValueError, IndexError):
+                tall = DEFAULT_HEIGHT
+            if tall < EXPAND_ABOVE:          # last saved size was itself compact
+                tall = DEFAULT_HEIGHT
+            self.root.geometry(f"{max(self.root.winfo_width(), 430)}x{tall}")
+            self._set_layout("expanded")
 
     def _height(self):
         """Window height, or the height we are about to be given.
@@ -967,16 +1060,15 @@ class TimerApp:
     def _on_configure(self, event):
         if event.widget is not self.root or not self._ready:
             return
-        want = "expanded" if self.root.winfo_height() >= BREAKPOINT_H else "compact"
-        # Always drop a pending job first. Returning early while one is still
-        # queued lets a stale decision fire later and clobber the right layout.
-        if self._resize_job:
-            self.root.after_cancel(self._resize_job)
-            self._resize_job = None
-        if want == self._layout:
-            return
-        # Debounced so dragging across the breakpoint doesn't thrash the layout.
-        self._resize_job = self.root.after(RESIZE_DEBOUNCE, lambda: self._set_layout(want))
+        h = self.root.winfo_height()
+        if h < COLLAPSE_BELOW:
+            want = "compact"
+        elif h > EXPAND_ABOVE:
+            want = "expanded"
+        else:
+            return  # inside the dead zone: keep whichever layout is showing
+        if want != self._layout:
+            self._set_layout(want)
 
     def _set_layout(self, want):
         self._resize_job = None
