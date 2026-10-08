@@ -169,6 +169,28 @@ def add_manual_log(project_name, hours, description="", end_time=None):
             VALUES (?, ?, ?, ?, 0)
         ''', (project_name, start_time.isoformat(), end_time.isoformat(), description))
 
+def discard_active_timer():
+    """Delete a running or just-paused timer without recording an entry.
+
+    For a timer started by mistake. Returns the number of rows removed. The
+    paused branch is guarded on MAX(id) so it can only ever remove a paused row
+    that is still the newest one — the same condition get_paused_timer() uses
+    to decide a pause is current.
+    """
+    with get_db() as (conn, cursor):
+        cursor.execute('DELETE FROM time_logs WHERE is_active = 1')
+        removed = cursor.rowcount or 0
+        if not removed:
+            cursor.execute('''
+                DELETE FROM time_logs
+                WHERE id = (SELECT MAX(id) FROM time_logs)
+                  AND is_active = 0
+                  AND description = '[Paused]'
+            ''')
+            removed = cursor.rowcount or 0
+    return removed
+
+
 def get_all_active_timers():
     """Return all rows where is_active = True. Should normally be 0 or 1.
     Useful for debugging orphaned timer issues."""

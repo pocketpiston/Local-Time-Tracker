@@ -152,6 +152,8 @@ Two ways to switch:
 * Big live elapsed-time readout plus the current project and start time.
 * **Start Timer** when idle — pick a preset from the dropdown or type any project name.
 * **Pause / Resume** and **Stop** (see the stop dialog below).
+* **Adjust start** — pulls a running timer's start time backwards, for when you began working before you remembered to hit start. Quick −5 / −15 / −30 buttons, or type the same forms the menu bar app accepts: `45`, `15m`, `2h`, `1.5h`, or a time like `10:30`.
+* **Discard** — deletes a timer started by mistake without logging anything. Asks first, and names the project and elapsed time so you know what you're throwing away.
 * **➕ Log Hours Manually** — project, hours (e.g. `5.5`), and an optional description, saved ending now.
 * **Today** and **This Week** running totals.
 * **Always on top** — the window floats above other apps' windows. Remembered between launches. Note it won't follow you to another macOS *Space*; Tk doesn't expose that setting.
@@ -167,7 +169,9 @@ It polls the database once a second, so timers started from the menu bar app sho
    ```
    These are two numbers on purpose. `generate_invoice.py` rounds up the **daily bucket**, not each session, so a per-session figure would over-bill. The app imports the rounding rule and `classify()` from the invoice script so the two can't drift apart.
 2. **Lets you correct the entry** before saving — hit **Adjust** to edit the start, the end, the duration, or the **project**; everything else recalculates live, including the billable figure, which changes when you switch project. The time editing exists because several entries in the database carry corrections written into the notes instead ("Adjust to 2 hr 15 min for total session").
-3. **Takes multi-line notes**, and warns you when your wording would put this session under a different invoice item code than the rest of the day — which silently splits the day into two separately-rounded lines.
+3. **Takes multi-line notes.** The invoice derives the item code (Meeting / Drafting / Research) from keywords in what you write, so the code isn't shown or second-guessed here — it follows the text.
+
+Closing the dialog with notes typed asks before discarding them, and quitting the app with a timer still going offers to leave it running, stop and save it, or discard it.
 
 **Make it a real Mac app (one-time):**
 ```bash

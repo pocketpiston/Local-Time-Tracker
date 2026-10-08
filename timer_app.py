@@ -42,8 +42,12 @@ POLL_MS = 1000       # re-read the DB every second so external changes show up
 COLLAPSE_BELOW = 250
 EXPAND_ABOVE = 290
 BREAKPOINT_H = 260   # single threshold, used only to pick the opening layout
-COMPACT_HEIGHT = 152
+COMPACT_HEIGHT = 158
 SETTLE_MS = 360
+# One button height and one label size everywhere. Mixing 50/42/36 made rows
+# that sit directly above each other look misaligned.
+BTN_H = 46
+BTN_SIZE = 14
 DEFAULT_GEOMETRY = "430x530"
 DEFAULT_HEIGHT = 530
 # A single session longer than a day is a typo, not a work session. Bounding it
@@ -67,7 +71,23 @@ T = {
     "pauselbl": "#8a5a00",
     "idle":     "#7a8192",
     "danger":   "#c02626",
+    "shadow":   "#d2d6de",
 }
+
+# Semantic button fills. Darker than the matching status-dot colours, which are
+# too light to carry white text at 4.5:1. Red is reserved for Discard: Stop
+# *saves* the entry, and colouring it as a hazard would be a lie you'd learn to
+# hesitate over twenty times a day.
+TONES = {
+    "go":     ("#0e7a55", "#ffffff"),   # start / resume      white 5.34:1
+    "hold":   ("#c07d0a", "#15181f"),   # pause               ink   5.23:1
+    "finish": ("#4453c4", "#ffffff"),   # stop and save       white 6.40:1
+    "danger": ("#c02626", "#ffffff"),   # discard             white 5.92:1
+    "neutral": ("#e3e7ee", "#15181f"),  # cancel / back out   ink  12.4:1
+}
+# Pause takes dark text rather than white. Amber is the one hue where white
+# can't reach 4.5:1 without darkening into brown — #b5730a managed only
+# 3.87:1 — and a muddy Pause would have looked disabled next to the others.
 
 UI = "Helvetica Neue"
 MONO = "Menlo"
@@ -109,6 +129,13 @@ def shade(hex_color, factor):
 
 
 def rounded_points(x1, y1, x2, y2, r):
+    """Control polygon for a rounded rect, drawn with smooth=True.
+
+    Tracing real arcs and drawing them unsmoothed is geometrically exact and
+    looks worse: Tk's canvas antialiases a splined curve but not a raw polygon
+    fill, so the "accurate" version renders with hard stair-stepped edges.
+    Keep the spline.
+    """
     return [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r,
             x2, y2 - r, x2, y2, x2 - r, y2,
             x1 + r, y2, x1, y2, x1, y2 - r,
@@ -124,9 +151,14 @@ def billable(hours):
 # macOS ignores background colours on native tk/ttk buttons, so the controls
 # below are drawn on canvases to get a consistent, themeable look.
 class Button(tk.Canvas):
-    def __init__(self, parent, text, command, kind="secondary", height=46, size=15):
-        self.kind = kind
-        if kind == "primary":
+    def __init__(self, parent, text, command, kind="secondary", height=46, size=15,
+                 shadow=False, tone=None):
+        self.kind = "primary" if tone else kind
+        self.shadow = shadow and self.kind != "ghost"
+        if tone:
+            self.fill, self.fg = TONES[tone]
+            self.outline = self.fill
+        elif kind == "primary":
             self.fill, self.fg, self.outline = T["accent"], "#ffffff", T["accent"]
         elif kind == "ghost":
             self.fill, self.fg, self.outline = parent["bg"], T["muted"], None
@@ -149,10 +181,19 @@ class Button(tk.Canvas):
         w, h = self.winfo_width(), self.winfo_height()
         if w <= 1:
             return
+        bottom = h - 1
+        if self.shadow:
+            # A soft drop shadow: one offset rounded rect behind the face.
+            # Tk has no real blur, so the face is lifted 3px to leave it room.
+            tint = shade(self.fill, 0.72) if self.kind == "primary" else T["shadow"]
+            self.create_polygon(rounded_points(2, 4, w - 2, h - 1, 9), smooth=True,
+                                fill=tint, outline=tint)
+            bottom = h - 4
         if self.kind != "ghost":
-            self.create_polygon(rounded_points(1, 1, w - 1, h - 1, 9), smooth=True,
+            self.create_polygon(rounded_points(1, 1, w - 1, bottom, 9), smooth=True,
                                 fill=self._fill, outline=self.outline or self._fill)
-        self.create_text(w / 2, h / 2 + 1, text=self.text, fill=self.fg, font=self.font)
+        self.create_text(w / 2, (1 + bottom) / 2 + 1, text=self.text,
+                         fill=self.fg, font=self.font)
 
     def _hover_on(self, _e):
         self._fill = shade(self.fill, 0.94) if self.kind == "primary" else T["surface"]
@@ -179,6 +220,12 @@ class Button(tk.Canvas):
         self.text = text
         self._draw()
 
+    def set_tone(self, tone):
+        """Recolour in place — Pause and Resume are different actions."""
+        self.fill, self.fg = TONES[tone]
+        self.outline = self._fill = self.fill
+        self._draw()
+
 
 class Toggle(tk.Canvas):
     W, H = 40, 23
@@ -193,13 +240,22 @@ class Toggle(tk.Canvas):
 
     def _draw(self):
         self.delete("all")
-        track = T["accent"] if self.value else T["border"]
-        self.create_polygon(rounded_points(1, 1, self.W - 1, self.H - 1, (self.H - 2) / 2),
-                            smooth=True, fill=track, outline=track)
-        r = (self.H - 8) / 2
-        cx = (self.W - 5 - r) if self.value else (5 + r)
-        self.create_oval(cx - r, self.H / 2 - r, cx + r, self.H / 2 + r,
-                         fill="#ffffff", outline="")
+        radius = (self.H - 2) / 2
+        # The off state was near-white on a white window and easy to miss, so
+        # the track is darker with a rim, and the knob carries a shadow.
+        track = T["accent"] if self.value else "#bfc5d0"
+        rim = shade(T["accent"], 0.82) if self.value else "#9aa2b1"
+        self.create_polygon(rounded_points(2, 3, self.W - 1, self.H - 1, radius),
+                            smooth=True, fill=T["shadow"], outline=T["shadow"])
+        self.create_polygon(rounded_points(1, 1, self.W - 2, self.H - 3, radius),
+                            smooth=True, fill=track, outline=rim)
+        r = (self.H - 10) / 2
+        cx = (self.W - 7 - r) if self.value else (6 + r)
+        cy = (self.H - 2) / 2
+        self.create_oval(cx - r, cy - r + 1, cx + r, cy + r + 1,
+                         fill="#c9ced8", outline="")      # knob shadow
+        self.create_oval(cx - r, cy - r, cx + r, cy + r,
+                         fill="#ffffff", outline="#e8eaef")
 
     def _click(self, _e):
         self.value = not self.value
@@ -220,6 +276,10 @@ class Dropdown(tk.Toplevel):
     def __init__(self, anchor, items, on_pick, max_rows=8):
         super().__init__(anchor.winfo_toplevel())
         self.on_pick = on_pick
+        # Taking the grab below steals it from a modal parent; remember who had
+        # it so closing can hand it back, or that dialog silently stops being
+        # modal and the window behind it becomes clickable again.
+        self._prev_grab = anchor.winfo_toplevel().grab_current()
         # Hide while building. A Toplevel is mapped as soon as it exists, so
         # without this macOS first places it at its own default spot — which is
         # where it stays visible, to the side of the field it belongs under.
@@ -280,7 +340,14 @@ class Dropdown(tk.Toplevel):
             self.grab_release()
         except tk.TclError:
             pass
+        prev = self._prev_grab
         self.destroy()
+        if prev is not None and str(prev):
+            try:
+                if prev.winfo_exists():
+                    prev.grab_set()
+            except tk.TclError:
+                pass
 
 
 class ProjectPicker(tk.Frame):
@@ -459,6 +526,38 @@ def fmt_elapsed(delta):
     return f"{h}:{m:02d}:{s:02d}"
 
 
+def parse_adjustment(text, current_start, now=None):
+    """New start time from an adjustment, using the menu bar app's grammar.
+
+    Accepts minutes to subtract (``45``, ``15m``, ``15mins``), hours
+    (``2h``, ``1.5h``, ``2hours``) or an absolute clock time (``10:30``),
+    so the two apps behave the same way. Raises ValueError on anything else.
+    """
+    now = now or datetime.datetime.now()
+    val = (text or "").strip().lower()
+    if not val:
+        raise ValueError("Enter an amount to subtract, or a start time.")
+
+    m = re.match(r'^(\d+(?:\.\d+)?)\s*h(?:ours?|rs?)?$', val)
+    if m:
+        return current_start - datetime.timedelta(hours=float(m.group(1)))
+
+    m = re.match(r'^(\d+)\s*m(?:ins?|inutes?)?$', val)
+    if m:
+        return current_start - datetime.timedelta(minutes=int(m.group(1)))
+
+    if re.match(r'^\d{1,2}:\d{2}(:\d{2})?\s*(am|pm)?$', val):
+        start = parse_clock(val, current_start)
+        if start > now:
+            start -= datetime.timedelta(days=1)   # that time hasn't happened yet
+        return start
+
+    if re.match(r'^\d+$', val):
+        return current_start - datetime.timedelta(minutes=int(val))
+
+    raise ValueError("Try 45, 15m, 2h, 1.5h, or a time like 10:30.")
+
+
 def parse_clock(text, reference):
     """Parse '3:05 PM', '15:05' or '15:05:30' onto reference's date."""
     t = (text or "").strip().lower().replace(".", "")
@@ -512,13 +611,30 @@ class Dialog(tk.Toplevel):
         box.pack(fill="both", expand=True)
         return box
 
-    def buttons(self, ok_text):
+    def fit(self):
+        """Resize to the content, bounded by the screen.
+
+        A panel opening inside a fixed-height dialog pushes the buttons at the
+        bottom out of reach — the window looks stuck because there is no longer
+        any way to finish.
+        """
+        self.update_idletasks()
+        h = min(self.winfo_reqheight(), self.winfo_screenheight() - 140)
+        self.geometry(f"{self.winfo_width()}x{h}")
+
+    def buttons(self, ok_text, cancel_text="Cancel", ok_tone="finish"):
         row = tk.Frame(self.body, bg=T["bg"])
         row.pack(fill="x", pady=(14, 0))
-        row.columnconfigure(0, weight=1)
-        row.columnconfigure(1, weight=2)
-        Button(row, "Cancel", self._cancel).grid(row=0, column=0, sticky="ew", padx=(0, 5))
-        Button(row, ok_text, self._ok, kind="primary").grid(row=0, column=1, sticky="ew", padx=(5, 0))
+        # Equal columns: an unequal split made the pair read as two different
+        # controls rather than two answers to the same question.
+        row.columnconfigure(0, weight=1, uniform="btn")
+        row.columnconfigure(1, weight=1, uniform="btn")
+        Button(row, cancel_text, self._cancel, tone="neutral",
+               height=BTN_H, size=BTN_SIZE, shadow=True).grid(
+                   row=0, column=0, sticky="ew", padx=(0, 5))
+        Button(row, ok_text, self._ok, tone=ok_tone,
+               height=BTN_H, size=BTN_SIZE, shadow=True).grid(
+                   row=0, column=1, sticky="ew", padx=(5, 0))
 
     def _ok(self):
         raise NotImplementedError
@@ -538,9 +654,155 @@ class Notice(Dialog):
                  anchor="w", justify="left", wraplength=300).pack(fill="x", pady=(8, 0))
         row = tk.Frame(self.body, bg=T["bg"])
         row.pack(fill="x", side="bottom")
-        Button(row, "OK", self._cancel, kind="primary").pack(fill="x")
+        Button(row, "OK", self._cancel, tone="finish", height=BTN_H,
+               size=BTN_SIZE, shadow=True).pack(fill="x")
         self.grab_set()
         self.wait_window(self)
+
+
+class ConfirmDialog(Dialog):
+    """Yes/no for something that cannot be undone."""
+
+    def __init__(self, parent, title, message, confirm="Delete"):
+        super().__init__(parent, title, 380, 220)
+        tk.Label(self.body, text=title, bg=T["bg"], fg=T["text"],
+                 font=(UI, 16, "bold"), anchor="w").pack(fill="x")
+        tk.Label(self.body, text=message, bg=T["bg"], fg=T["muted"], font=(UI, 12),
+                 anchor="w", justify="left", wraplength=320).pack(fill="x", pady=(8, 0))
+        row = tk.Frame(self.body, bg=T["bg"])
+        row.pack(fill="x", side="bottom")
+        row.columnconfigure(0, weight=1, uniform="btn")
+        row.columnconfigure(1, weight=1, uniform="btn")
+        Button(row, "Keep it", self._cancel, tone="neutral", height=BTN_H,
+               size=BTN_SIZE, shadow=True).grid(row=0, column=0, sticky="ew", padx=(0, 5))
+        Button(row, confirm, self._ok, tone="danger", height=BTN_H,
+               size=BTN_SIZE, shadow=True).grid(row=0, column=1, sticky="ew", padx=(5, 0))
+        self.fit()
+        self.grab_set()
+        self.wait_window(self)
+
+    def _ok(self):
+        self.result = True
+        self.destroy()
+
+
+class ChoiceDialog(Dialog):
+    """A warning with several ways out, stacked one per row.
+
+    Used where something is unfinished and there is no single safe default —
+    quitting with a timer still running, or abandoning typed notes.
+    """
+
+    def __init__(self, parent, title, message, choices, height=270):
+        super().__init__(parent, title, 400, height)
+        tk.Label(self.body, text=title, bg=T["bg"], fg=T["text"],
+                 font=(UI, 16, "bold"), anchor="w").pack(fill="x")
+        tk.Label(self.body, text=message, bg=T["bg"], fg=T["muted"], font=(UI, 12),
+                 anchor="w", justify="left", wraplength=340).pack(fill="x", pady=(8, 14))
+        for label, value, kind in choices:
+            tone = {"danger": "danger", "primary": "finish",
+                    "secondary": "neutral"}.get(kind, "neutral")
+            Button(self.body, label, lambda v=value: self._pick(v), tone=tone,
+                   height=BTN_H, size=BTN_SIZE, shadow=True).pack(fill="x", pady=(0, 8))
+        self.fit()
+        self.grab_set()
+        self.wait_window(self)
+
+    def _pick(self, value):
+        self.result = value
+        self.destroy()
+
+
+class AdjustStartDialog(Dialog):
+    """Pull a running timer's start time backwards.
+
+    Mirrors the menu bar app's Custom Adjustment, for when you start the timer
+    a few minutes after actually starting work.
+    """
+
+    def __init__(self, parent, project, start_dt):
+        super().__init__(parent, "Adjust Start", 380, 400)
+        self.start_dt = start_dt
+        self.new_start = start_dt
+
+        self.heading("Adjust start time")
+        tk.Label(self.body, text=project, bg=T["bg"], fg=T["muted"],
+                 font=(UI, 13), anchor="w").pack(fill="x", pady=(4, 0))
+
+        self.caption("Quick")
+        quick = tk.Frame(self.body, bg=T["bg"])
+        quick.pack(fill="x")
+        for i, mins in enumerate((5, 15, 30)):
+            quick.columnconfigure(i, weight=1)
+            Button(quick, f"−{mins} min", lambda m=mins: self._shift(m),
+                   height=BTN_H, size=BTN_SIZE, shadow=True).grid(row=0, column=i, sticky="ew",
+                                            padx=(0 if i == 0 else 5, 0))
+
+        self.caption("Or type an amount")
+        wrap = tk.Frame(self.body, bg=T["bg"], highlightthickness=1,
+                        highlightbackground=T["border2"], height=42)
+        wrap.pack(fill="x")
+        wrap.pack_propagate(False)
+        self.entry = tk.Entry(wrap, bd=0, relief="flat", bg=T["bg"], fg=T["text"],
+                              highlightthickness=0, font=(UI, 15),
+                              insertbackground=T["text"])
+        self.entry.pack(fill="both", expand=True, padx=13)
+        self.entry.bind("<KeyRelease>", lambda _e: self._from_text())
+        tk.Label(self.body, text="45 · 15m · 2h · 1.5h · or a time like 10:30",
+                 bg=T["bg"], fg=T["muted"], font=(UI, 11), anchor="w").pack(
+                     fill="x", pady=(6, 0))
+
+        self.lbl_preview = tk.Label(self.body, bg=T["bg"], fg=T["text"],
+                                    font=(UI, 14, "bold"), anchor="w")
+        self.lbl_preview.pack(fill="x", pady=(14, 0))
+        self.lbl_err = tk.Label(self.body, bg=T["bg"], fg=T["danger"],
+                                font=(UI, 11), anchor="w")
+        self.lbl_err.pack(fill="x", pady=(4, 0))
+
+        self.buttons("Save")
+        self._preview()
+        self.fit()
+        self.entry.focus_set()
+        self.grab_set()
+        self.wait_window(self)
+
+    def _shift(self, minutes):
+        self.new_start = self.new_start - datetime.timedelta(minutes=minutes)
+        self.lbl_err.config(text="")
+        self.entry.delete(0, "end")
+        self._preview()
+
+    def _from_text(self):
+        raw = self.entry.get().strip()
+        if not raw:
+            self.new_start = self.start_dt
+            self.lbl_err.config(text="")
+            self._preview()
+            return
+        try:
+            self.new_start = parse_adjustment(raw, self.start_dt)
+        except ValueError as e:
+            self.lbl_err.config(text=str(e))
+            return
+        self.lbl_err.config(text="")
+        self._preview()
+
+    def _preview(self):
+        elapsed = datetime.datetime.now() - self.new_start
+        self.lbl_preview.config(
+            text=f"Starts {self.new_start:%-I:%M %p}  ·  {fmt_elapsed(elapsed)} elapsed")
+
+    def _ok(self):
+        now = datetime.datetime.now()
+        if self.new_start > now:
+            self.lbl_err.config(text="That start time is in the future.")
+            return
+        if (now - self.new_start).total_seconds() / 3600.0 > MAX_SESSION_HOURS:
+            self.lbl_err.config(
+                text=f"That would make the session over {MAX_SESSION_HOURS} h.")
+            return
+        self.result = self.new_start.isoformat()
+        self.destroy()
 
 
 class StopDialog(Dialog):
@@ -553,6 +815,9 @@ class StopDialog(Dialog):
 
     def __init__(self, parent, project, start_dt, end_dt, projects=()):
         super().__init__(parent, "Stop Timer", 430, 660)
+        # Vertically resizable as a backstop: fit() sizes to the content, but
+        # on a short screen the user must still be able to reach Save.
+        self.resizable(False, True)
         self.project = project
         self.start_dt = start_dt
         self.end_dt = end_dt
@@ -599,7 +864,7 @@ class StopDialog(Dialog):
         self.lbl_note.pack(fill="x", pady=(4, 0))
 
         self.btn_adjust = Button(inner, "Adjust", self._toggle_adjust,
-                                 height=34, size=12)
+                                 height=BTN_H, size=BTN_SIZE, shadow=True)
         self.btn_adjust.pack(fill="x", pady=(12, 0))
 
         # Adjust fields, hidden until asked for
@@ -634,12 +899,11 @@ class StopDialog(Dialog):
         hint.pack(fill="x", pady=(7, 0))
         tk.Label(hint, text="Goes onto the invoice line for this day",
                  bg=T["bg"], fg=T["muted"], font=(UI, 11)).pack(side="left")
-        self.lbl_code = tk.Label(hint, bg=T["bg"], fg=T["muted"], font=(UI, 11))
-        self.lbl_code.pack(side="right")
 
         self.buttons("Save entry")
         self._sync_fields()
         self._refresh()
+        self.fit()
         self.box.focus_set()
         self.grab_set()
         self.wait_window(self)
@@ -671,12 +935,18 @@ class StopDialog(Dialog):
 
     def _toggle_adjust(self):
         self.adjust_open = not self.adjust_open
+        # Re-pack the toggle so it sits *below* the fields while they are open:
+        # a "Back" control above the panel it leaves reads backwards.
+        self.btn_adjust.pack_forget()
         if self.adjust_open:
             self.adjust.pack(fill="x")
-            self.btn_adjust.set_text("Done")
+            self.btn_adjust.set_text("←  Back")
+            self.btn_adjust.pack(fill="x", pady=(12, 0))
         else:
             self.adjust.pack_forget()
             self.btn_adjust.set_text("Adjust")
+            self.btn_adjust.pack(fill="x", pady=(12, 0))
+        self.fit()
 
     def _sync_fields(self):
         for entry, value in ((self.in_start, self.start_dt.strftime('%-I:%M %p')),
@@ -736,9 +1006,10 @@ class StopDialog(Dialog):
                  f"{self.end_dt.strftime('%-I:%M %p')}"
                  f"{'' if same_day else '  (next day)'}")
 
-        notes = self.box.get("1.0", "end").strip()
-        code = classify(notes)
-        self.lbl_code.config(text=f"Item: {code}")
+        # The invoice derives the item code from the notes, so it is not shown
+        # or warned about here — it changes as you type, and flagging it read
+        # as a restriction rather than a description of what the invoice does.
+        code = classify(self.box.get("1.0", "end").strip())
 
         if self.project in EXCLUDE_PROJECTS:
             self.lbl_bucket.config(text="Not billed", fg=T["muted"])
@@ -759,21 +1030,30 @@ class StopDialog(Dialog):
 
         bits = []
         if prior_same_code > 0:
-            bits.append(f"Includes {prior_same_code:.2f} h already logged that day "
-                        f"under {code}. The 0.1 h round-up applies to the day's "
-                        f"total, not to each session.")
+            bits.append(f"Includes {prior_same_code:.2f} h already logged that day. "
+                        f"The 0.1 h round-up applies to the day's total, not to "
+                        f"each session.")
         spill = [(d, h) for d, h in shares if d != day]
         if spill:
             parts = ", ".join(f"{h:.2f} h on {d:%b %-d}" for d, h in spill)
             bits.append(f"This session runs past midnight, so the invoice bills "
                         f"{parts} as a separate line.")
-        other = codes_today - {code}
-        if other:
-            bits.append(f"⚠ Today also has {', '.join(sorted(other))} time on this "
-                        f"project. Your notes put this session under {code}, so it "
-                        f"bills as a separate line and rounds up separately.")
-        self.lbl_note.config(text=" ".join(bits),
-                             fg=T["pauselbl"] if other else T["muted"])
+        self.lbl_note.config(text=" ".join(bits), fg=T["muted"])
+
+    def _cancel(self):
+        """Don't silently throw away typed notes."""
+        if self.box.get("1.0", "end").strip():
+            choice = ChoiceDialog(
+                self, "Discard these notes?",
+                "You've written notes that haven't been saved. The timer stays "
+                "as it is either way — only the notes are lost.",
+                [("Keep editing", "keep", "secondary"),
+                 ("Discard the notes", "discard", "danger")],
+                height=250)
+            if choice.result != "discard":
+                return
+        self.result = None
+        self.destroy()
 
     def _ok(self):
         if self._hours() <= 0:
@@ -877,28 +1157,47 @@ class ExpandedView(tk.Frame):
         self.actions.pack(fill="x", pady=(20, 0))
         self.actions.columnconfigure(0, weight=1)
         self.actions.columnconfigure(1, weight=1)
-        self.btn_start = Button(self.actions, "Start Timer", app.on_start, kind="primary")
-        self.btn_pause = Button(self.actions, "Pause", app.on_pause_resume)
-        self.btn_stop = Button(self.actions, "Stop", app.on_stop, kind="primary")
+        self.btn_start = Button(self.actions, "Start Timer", app.on_start,
+                                tone="go", height=BTN_H, size=BTN_SIZE, shadow=True)
+        self.btn_pause = Button(self.actions, "Pause", app.on_pause_resume,
+                                tone="hold", height=BTN_H, size=BTN_SIZE, shadow=True)
+        self.btn_stop = Button(self.actions, "Stop", app.on_stop,
+                               tone="finish", height=BTN_H, size=BTN_SIZE, shadow=True)
 
-        Button(wrap, "+  Log hours manually", app.on_log_hours,
-               kind="ghost", height=36, size=13).pack(fill="x", pady=(9, 0))
+        # Only meaningful while a timer exists, so packed/unpacked with state.
+        self.extra = tk.Frame(wrap, bg=T["bg"])
+        self.extra.columnconfigure(0, weight=1)
+        self.extra.columnconfigure(1, weight=1)
+        Button(self.extra, "Adjust start", app.on_adjust_start,
+               height=BTN_H, size=BTN_SIZE, shadow=True).grid(row=0, column=0, sticky="ew",
+                                                     padx=(0, 5))
+        Button(self.extra, "Discard", app.on_discard, tone="danger",
+               height=BTN_H, size=BTN_SIZE, shadow=True).grid(row=0, column=1,
+                                                     sticky="ew", padx=(5, 0))
+
+        self.btn_log = Button(wrap, "+  Log hours manually", app.on_log_hours,
+                              kind="ghost", height=BTN_H, size=BTN_SIZE)
+        self.btn_log.pack(fill="x", pady=(9, 0))
+
+        # Everything flows top-down with fixed gaps. Pinning the footer to the
+        # bottom instead made every extra pixel of window height pool in one
+        # gap in the middle, so the spacing never looked the same at two sizes.
+        tk.Frame(wrap, bg=T["border"], height=1).pack(fill="x", pady=(16, 0))
+
+        stats = tk.Frame(wrap, bg=T["bg"])
+        stats.pack(fill="x", pady=(13, 0))
+        stats.columnconfigure(0, weight=1)
+        stats.columnconfigure(1, weight=1)
+        self.today = self._stat(stats, 0, "TODAY")
+        self.week = self._stat(stats, 1, "THIS WEEK")
 
         footer = tk.Frame(wrap, bg=T["bg"])
-        footer.pack(fill="x", side="bottom", pady=(10, 0))
+        footer.pack(fill="x", pady=(14, 0))
         tk.Label(footer, text="Always on top", bg=T["bg"], fg=T["muted"],
                  font=(UI, 13)).pack(side="left")
         self.toggle = Toggle(footer, value=app.settings.get("always_on_top", False),
                              command=app.on_toggle_top)
         self.toggle.pack(side="right")
-
-        stats = tk.Frame(wrap, bg=T["bg"])
-        stats.pack(fill="x", side="bottom", pady=(13, 0))
-        stats.columnconfigure(0, weight=1)
-        stats.columnconfigure(1, weight=1)
-        self.today = self._stat(stats, 0, "TODAY")
-        self.week = self._stat(stats, 1, "THIS WEEK")
-        tk.Frame(wrap, bg=T["border"], height=1).pack(fill="x", side="bottom")
 
         self._mode = None
 
@@ -919,12 +1218,14 @@ class ExpandedView(tk.Frame):
         self.today.config(text=f"{s['today']:.1f}h")
         self.week.config(text=f"{s['week']:.1f}h")
 
-        if s["mode"] != self._mode:
+        mode_changed = s["mode"] != self._mode
+        if mode_changed:
             self._mode = s["mode"]
             self.project.pack_forget()
             self.picker.pack_forget()
             for b in (self.btn_start, self.btn_pause, self.btn_stop):
                 b.grid_forget()
+            self.extra.pack_forget()
             if s["mode"] == "idle":
                 self.picker.pack(fill="both", expand=True)
                 self.btn_start.grid(row=0, column=0, columnspan=2, sticky="ew")
@@ -932,9 +1233,18 @@ class ExpandedView(tk.Frame):
                 self.project.pack(fill="both", expand=True)
                 self.btn_pause.grid(row=0, column=0, sticky="ew", padx=(0, 5))
                 self.btn_stop.grid(row=0, column=1, sticky="ew", padx=(5, 0))
+                self.extra.pack(fill="x", pady=(8, 0), after=self.actions)
         if s["mode"] != "idle":
             self.project.config(text=s["project"])
-        self.btn_pause.set_text("Resume" if s["mode"] == "paused" else "Pause")
+        paused = s["mode"] == "paused"
+        self.btn_pause.set_text("Resume" if paused else "Pause")
+        # Resume is a "go" action, Pause is a "hold" one — same button, so it
+        # takes the colour of whichever it currently is.
+        self.btn_pause.set_tone("go" if paused else "hold")
+        if mode_changed:
+            # Running adds two buttons, so the content is taller than when idle;
+            # re-pin so the window tracks it in both directions.
+            self.app.fit_height()
 
 
 class CompactView(tk.Frame):
@@ -960,13 +1270,13 @@ class CompactView(tk.Frame):
         row = tk.Frame(wrap, bg=T["bg"])
         row.pack(fill="x", pady=(10, 0))
 
-        self.btn_stop = Button(row, "Stop", app.on_stop, kind="primary", height=42)
+        self.btn_stop = Button(row, "Stop", app.on_stop, tone="finish", height=BTN_H, size=BTN_SIZE, shadow=True)
         self.btn_stop.pack(side="right", padx=(8, 0))
         self.btn_stop.config(width=74)
-        self.btn_pause = Button(row, "Pause", app.on_pause_resume, height=42)
+        self.btn_pause = Button(row, "Pause", app.on_pause_resume, tone="hold", height=BTN_H, size=BTN_SIZE, shadow=True)
         self.btn_pause.pack(side="right", padx=(8, 0))
         self.btn_pause.config(width=74)
-        self.btn_start = Button(row, "Start", app.on_start, kind="primary", height=42)
+        self.btn_start = Button(row, "Start", app.on_start, tone="go", height=BTN_H, size=BTN_SIZE, shadow=True)
         self.btn_start.config(width=74)
 
         left = tk.Frame(row, bg=T["bg"])
@@ -1005,7 +1315,9 @@ class CompactView(tk.Frame):
             else:
                 self.btn_stop.pack(side="right", padx=(8, 0))
                 self.btn_pause.pack(side="right", padx=(8, 0))
-        self.btn_pause.set_text("Resume" if s["mode"] == "paused" else "Pause")
+        paused = s["mode"] == "paused"
+        self.btn_pause.set_text("Resume" if paused else "Pause")
+        self.btn_pause.set_tone("go" if paused else "hold")
 
 
 # ── Main window ─────────────────────────────────────────────────────
@@ -1049,6 +1361,23 @@ class TimerApp:
         self._ready = True
         want = "expanded" if self.root.winfo_height() >= BREAKPOINT_H else "compact"
         self._set_layout(want)
+        self.fit_height(exact=True)
+
+    def fit_height(self, exact=True):
+        """Pin the window to the height of its content.
+
+        The expanded view is capped with maxsize rather than merely resized, so
+        the window cannot be dragged taller than it needs — trailing white space
+        under the footer serves no purpose and just looks like a mistake. The
+        cap always tracks the *expanded* height so a collapsed window can still
+        be dragged back up; dragging shorter still collapses to the bar.
+        """
+        self.root.update_idletasks()
+        need = min(self.expanded.winfo_reqheight(),
+                   self.root.winfo_screenheight() - 140)
+        self.root.maxsize(self.root.winfo_screenwidth(), need)
+        if self._layout == "expanded" and (exact or self.root.winfo_height() < need):
+            self.root.geometry(f"{self.root.winfo_width()}x{need}")
 
     def toggle_size(self):
         """Snap between the two sizes — bound to a double-click on the window."""
@@ -1067,6 +1396,7 @@ class TimerApp:
                 tall = DEFAULT_HEIGHT
             self.root.geometry(f"{max(self.root.winfo_width(), 430)}x{tall}")
             self._set_layout("expanded")
+            self.fit_height(exact=True)
 
     def _height(self):
         """Window height, or the height we are about to be given.
@@ -1105,6 +1435,8 @@ class TimerApp:
         self.compact.pack_forget()
         (self.expanded if want == "expanded" else self.compact).pack(fill="both", expand=True)
         self.refresh(reschedule=False)
+        if self._ready:
+            self.fit_height()
 
     @property
     def view(self):
@@ -1220,6 +1552,51 @@ class TimerApp:
                 "Could not save entry")
         self.refresh(reschedule=False)
 
+    def on_adjust_start(self):
+        active = db_logic.get_active_timer()
+        paused = None if active else paused_row()
+        row = active or paused
+        if not row:
+            Notice(self.root, "Nothing running", "There's no timer to adjust.")
+            return
+        if paused:
+            Notice(self.root, "Timer is paused",
+                   "Resume the timer first, then adjust its start time.")
+            return
+        start = datetime.datetime.fromisoformat(row["start_time"])
+        dlg = AdjustStartDialog(self.root, row["project_name"], start)
+        if dlg.result is None:
+            return
+        self._guard(lambda: db_logic.set_active_start_time(dlg.result),
+                    "Could not adjust the start time")
+        self.refresh(reschedule=False)
+
+    def on_discard(self):
+        active = db_logic.get_active_timer()
+        paused = None if active else paused_row()
+        row = active or paused
+        if not row:
+            Notice(self.root, "Nothing running", "There's no timer to discard.")
+            return
+        start = datetime.datetime.fromisoformat(row["start_time"])
+        elapsed = fmt_elapsed(datetime.datetime.now() - start)
+        dlg = ConfirmDialog(
+            self.root, "Discard this timer?",
+            f"{row['project_name']} — {elapsed} since {start:%-I:%M %p}.\n\n"
+            f"The entry is deleted and nothing is logged. This can't be undone.",
+            confirm="Discard")
+        if not dlg.result:
+            return
+        removed = []
+        if self._guard(lambda: removed.append(db_logic.discard_active_timer()),
+                       "Could not discard the timer"):
+            if removed and removed[0]:
+                Notice(self.root, "Timer discarded", "Nothing was logged.")
+            else:
+                Notice(self.root, "Nothing to discard",
+                       "The timer had already been saved or removed.")
+        self.refresh(reschedule=False)
+
     def on_log_hours(self):
         dlg = LogHoursDialog(self.root, self.projects)
         if dlg.result is None:
@@ -1232,6 +1609,33 @@ class TimerApp:
         self.refresh(reschedule=False)
 
     def on_close(self):
+        # An unfinished timer is the one thing worth interrupting a quit for:
+        # it is still in the database, but nothing has been logged yet.
+        active = db_logic.get_active_timer()
+        paused = None if active else paused_row()
+        row = active or paused
+        if row:
+            start = datetime.datetime.fromisoformat(row["start_time"])
+            state = "running" if active else "paused"
+            choice = ChoiceDialog(
+                self.root, "A timer is still going",
+                f"{row['project_name']} — {fmt_elapsed(datetime.datetime.now() - start)} "
+                f"{state} since {start:%-I:%M %p}, not yet saved as an entry.\n\n"
+                f"Leaving it keeps it {state}; it will still be there next time.",
+                [("Leave it " + state, "leave", "primary"),
+                 ("Stop and save it now", "save", "secondary"),
+                 ("Discard it — log nothing", "discard", "danger")],
+                height=320)
+            if choice.result is None:
+                return                      # dismissed: don't quit
+            if choice.result == "save":
+                self.on_stop()
+                if db_logic.get_active_timer() or paused_row():
+                    return                  # they backed out of the stop dialog
+            elif choice.result == "discard":
+                self._guard(db_logic.discard_active_timer,
+                            "Could not discard the timer")
+
         # Cancel queued callbacks first: one firing after destroy() raises a
         # Tcl "invalid command name" on the way out.
         for job in (self._poll_job, self._resize_job):

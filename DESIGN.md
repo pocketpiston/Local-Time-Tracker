@@ -88,6 +88,30 @@ Window geometry and the always-on-top setting persist to
 
 Deliberately small, and consistent with the Streamlit dashboard.
 
+**Button colour is semantic.** Four options were drawn on the canvas and the
+semantic one was chosen: green starts, amber holds, indigo finishes, red
+destroys. One rule shaped all four — **Stop *saves* the entry, so red belongs
+on Discard alone.** Colouring the button you press twenty times a day as a
+hazard would teach you to hesitate over it.
+
+| Tone | Fill | Text | Ratio |
+|---|---|---|---|
+| `go` — start / resume | `#0e7a55` | white | 5.34:1 |
+| `hold` — pause | `#c07d0a` | ink | 5.23:1 |
+| `finish` — stop and save | `#4453c4` | white | 6.40:1 |
+| `danger` — discard | `#c02626` | white | 5.92:1 |
+| `neutral` — cancel | `#e3e7ee` | ink | 12.4:1 |
+
+Pause takes dark text rather than white. Amber is the one hue where white
+cannot reach 4.5:1 without darkening into brown — the first attempt,
+`#b5730a`, managed 3.87:1 — and a muddy Pause would have looked disabled
+beside the others. Pause and Resume share a button, so it recolours with its
+meaning.
+
+Every button is one height (`BTN_H = 46`) and one label size. An earlier mix of
+50 / 42 / 36 put different-sized buttons in rows directly above each other,
+which read as misalignment.
+
 **Colour** — the state is carried by hue *and* lightness, never hue alone:
 
 | Token | Value | Use |
@@ -132,6 +156,13 @@ are drawn on canvases instead:
 - **`Toggle`** — an iOS-style switch; clearer at a glance than a checkbox.
 - **`Dropdown`** — replaces `tk_popup`, which renders the *native macOS context
   menu*: unstyleable, and positioned at the pointer rather than under the field.
+
+Shapes are drawn as a 12-point control polygon with `smooth=True`. Replacing
+that with mathematically exact arc points — 14 segments per corner, verified to
+sit on the circle to within 0.000000px — looked **worse** and was reverted:
+Tk's canvas antialiases a splined curve but not a raw polygon fill, so the
+accurate version rendered with hard stair-stepped edges. Geometry is not the
+constraint here; antialiasing is.
 
 The dropdown needed three fixes that only appeared on screen:
 
