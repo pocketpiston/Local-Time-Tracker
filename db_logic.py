@@ -56,6 +56,49 @@ def stop_timer(description):
             WHERE id = (SELECT MAX(id) FROM time_logs WHERE is_active = 1)
         ''', (end_time, description))
 
+def stop_timer_with(description, start_iso=None, end_iso=None):
+    """Stop the active timer, optionally overriding its start and/or end time.
+
+    Used by the desktop timer window, where the stop dialog lets you correct
+    the session length before saving it.
+    """
+    if end_iso is None:
+        end_iso = datetime.datetime.now().isoformat()
+    with get_db() as (conn, cursor):
+        if start_iso is None:
+            cursor.execute('''
+                UPDATE time_logs SET end_time = ?, description = ?, is_active = 0
+                WHERE id = (SELECT MAX(id) FROM time_logs WHERE is_active = 1)
+            ''', (end_iso, description))
+        else:
+            cursor.execute('''
+                UPDATE time_logs
+                SET start_time = ?, end_time = ?, description = ?, is_active = 0
+                WHERE id = (SELECT MAX(id) FROM time_logs WHERE is_active = 1)
+            ''', (start_iso, end_iso, description))
+
+
+def update_last_entry(description, start_iso=None, end_iso=None):
+    """Overwrite the newest row's description, and optionally its times.
+
+    Finalises a '[Paused]' row, which is already closed in the database.
+    """
+    with get_db() as (conn, cursor):
+        if start_iso is None and end_iso is None:
+            cursor.execute('''
+                UPDATE time_logs SET description = ?
+                WHERE id = (SELECT MAX(id) FROM time_logs)
+            ''', (description,))
+        else:
+            cursor.execute('''
+                UPDATE time_logs
+                SET description = ?,
+                    start_time = COALESCE(?, start_time),
+                    end_time = COALESCE(?, end_time)
+                WHERE id = (SELECT MAX(id) FROM time_logs)
+            ''', (description, start_iso, end_iso))
+
+
 def resume_paused_timer():
     """Reopen the most recent paused row: clear end_time/description, set is_active=1.
     Preserves the original start_time so elapsed time spans the pause gap."""
