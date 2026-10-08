@@ -56,6 +56,42 @@ def stop_timer(description):
             WHERE id = (SELECT MAX(id) FROM time_logs WHERE is_active = 1)
         ''', (end_time, description))
 
+def stop_timer_with(description, start_iso=None, end_iso=None, project=None):
+    """Stop the active timer, optionally correcting its times and project.
+
+    Used by the desktop timer window, where the stop dialog lets you fix the
+    session before saving it. Any argument left as None keeps the stored value.
+    """
+    if end_iso is None:
+        end_iso = datetime.datetime.now().isoformat()
+    with get_db() as (conn, cursor):
+        cursor.execute('''
+            UPDATE time_logs
+            SET end_time = ?,
+                description = ?,
+                is_active = 0,
+                start_time = COALESCE(?, start_time),
+                project_name = COALESCE(?, project_name)
+            WHERE id = (SELECT MAX(id) FROM time_logs WHERE is_active = 1)
+        ''', (end_iso, description, start_iso, project))
+
+
+def update_last_entry(description, start_iso=None, end_iso=None, project=None):
+    """Overwrite the newest row's description, and optionally times/project.
+
+    Finalises a '[Paused]' row, which is already closed in the database.
+    """
+    with get_db() as (conn, cursor):
+        cursor.execute('''
+            UPDATE time_logs
+            SET description = ?,
+                start_time = COALESCE(?, start_time),
+                end_time = COALESCE(?, end_time),
+                project_name = COALESCE(?, project_name)
+            WHERE id = (SELECT MAX(id) FROM time_logs)
+        ''', (description, start_iso, end_iso, project))
+
+
 def resume_paused_timer():
     """Reopen the most recent paused row: clear end_time/description, set is_active=1.
     Preserves the original start_time so elapsed time spans the pause gap."""
@@ -132,6 +168,28 @@ def add_manual_log(project_name, hours, description="", end_time=None):
             INSERT INTO time_logs (project_name, start_time, end_time, description, is_active)
             VALUES (?, ?, ?, ?, 0)
         ''', (project_name, start_time.isoformat(), end_time.isoformat(), description))
+
+def discard_active_timer():
+    """Delete a running or just-paused timer without recording an entry.
+
+    For a timer started by mistake. Returns the number of rows removed. The
+    paused branch is guarded on MAX(id) so it can only ever remove a paused row
+    that is still the newest one — the same condition get_paused_timer() uses
+    to decide a pause is current.
+    """
+    with get_db() as (conn, cursor):
+        cursor.execute('DELETE FROM time_logs WHERE is_active = 1')
+        removed = cursor.rowcount or 0
+        if not removed:
+            cursor.execute('''
+                DELETE FROM time_logs
+                WHERE id = (SELECT MAX(id) FROM time_logs)
+                  AND is_active = 0
+                  AND description = '[Paused]'
+            ''')
+            removed = cursor.rowcount or 0
+    return removed
+
 
 def get_all_active_timers():
     """Return all rows where is_active = True. Should normally be 0 or 1.

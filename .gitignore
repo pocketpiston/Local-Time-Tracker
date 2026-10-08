@@ -23,6 +23,12 @@ env/
 # Generated invoices (keep out of git — they contain billing info)
 invoices/
 
+# Local UI preferences (per-machine, not shared)
+.timer_app_settings.json
+
+# Built .app bundle (regenerate with ./build_app.sh)
+dist/
+
 # Editor/IDE
 .vscode/
 .idea/
