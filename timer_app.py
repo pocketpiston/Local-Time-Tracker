@@ -103,7 +103,7 @@ TONES = {
     "hold":   ("#a06400", "#ffffff"),   # pause               white 4.86:1
     "finish": ("#4453c4", "#ffffff"),   # stop and save       white 6.40:1
     "danger": ("#c02626", "#ffffff"),   # discard             white 5.92:1
-    "neutral": ("#e3e7ee", "#15181f"),  # cancel / back out   ink  12.4:1
+    "neutral": ("#ccd5e4", "#15181f"),  # cancel / back out   ink  12.0:1
 }
 # All four carry white text, which means the amber has to be darker than a
 # "true" amber: white needs 4.5:1, and #c07d0a reached only 3.40:1. #a06400 is

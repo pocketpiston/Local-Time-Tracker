@@ -111,13 +111,29 @@ hazard would teach you to hesitate over it.
 | `hold` — pause | `#a06400` | white | 4.86:1 |
 | `finish` — stop and save | `#4453c4` | white | 6.40:1 |
 | `danger` — discard | `#c02626` | white | 5.92:1 |
-| `neutral` — cancel | `#e3e7ee` | ink | 14.3:1 |
+| `neutral` — cancel | `#ccd5e4` | ink | 12.0:1 |
 
 The amber is darker than a "true" amber because all four carry white text, and
 white needs 4.5:1: `#c07d0a` reached only 3.40:1. `#a06400` is the most
 saturated amber that clears it. Cancel is the one button that keeps dark text —
 it should not compete with the others. Pause and Resume share a button, so it
 recolours with its meaning: amber running, green paused.
+
+Cancel's own fill went from `#e3e7ee` to `#ccd5e4` so the button is visible at
+all. A filled button has to separate from the white window behind it, and
+`#e3e7ee` managed 1.24:1 — close enough to white to disappear. `#ccd5e4` is
+1.48:1 and still carries dark text at 12:1.
+
+**A note on the 3:1 rule, since it is easy to misapply here.** WCAG's 3:1 for
+non-text contrast governs *interactive component boundaries*, which a border or
+a filled button edge satisfies. It is not reachable by a light grey surface:
+nothing lighter than roughly mid-grey clears 3:1 against white, in either
+direction — a *white* card needs a `#919191` window behind it. Surfaces are
+therefore judged by eye, and the step starts reading somewhere around 1.3. The
+card fill (`#f6f7f9`, 1.07:1) and the field outline (`#d7dae1`, 1.40:1) are
+both still on the faint side; four approaches that add visibility without
+adding grey — elevation, hairline, recessed inputs, accent-tinted surfaces —
+are drawn on the design canvas and not yet decided.
 
 Every button is one height (`BTN_H = 46`) and one label size (`BTN_SIZE = 14`);
 every text field is `FIELD_H = 44` / `FIELD_SIZE = 15`. Earlier these drifted —
