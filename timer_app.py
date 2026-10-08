@@ -551,12 +551,17 @@ class StopDialog(Dialog):
     not the session, is what actually gets billed.
     """
 
-    def __init__(self, parent, project, start_dt, end_dt):
-        super().__init__(parent, "Stop Timer", 430, 640)
+    def __init__(self, parent, project, start_dt, end_dt, projects=()):
+        super().__init__(parent, "Stop Timer", 430, 660)
         self.project = project
         self.start_dt = start_dt
         self.end_dt = end_dt
         self.adjust_open = False
+        # Offer the presets plus whatever this entry is already on, in case it
+        # was started as a one-off custom name.
+        self.projects = list(projects) or [project]
+        if project not in self.projects:
+            self.projects.insert(0, project)
 
         self.heading("Stop timer")
         self.caption("Time logged", pady=(16, 7))
@@ -567,8 +572,9 @@ class StopDialog(Dialog):
         inner = tk.Frame(card, bg=T["surface"])
         inner.pack(fill="x", padx=16, pady=14)
 
-        tk.Label(inner, text=project, bg=T["surface"], fg=T["text"],
-                 font=(UI, 17, "bold"), anchor="w").pack(fill="x")
+        self.lbl_project = tk.Label(inner, text=project, bg=T["surface"],
+                                    fg=T["text"], font=(UI, 17, "bold"), anchor="w")
+        self.lbl_project.pack(fill="x")
 
         row = tk.Frame(inner, bg=T["surface"])
         row.pack(fill="x", pady=(8, 0))
@@ -592,7 +598,7 @@ class StopDialog(Dialog):
                                  wraplength=350)
         self.lbl_note.pack(fill="x", pady=(4, 0))
 
-        self.btn_adjust = Button(inner, "Adjust time…", self._toggle_adjust,
+        self.btn_adjust = Button(inner, "Adjust", self._toggle_adjust,
                                  height=34, size=12)
         self.btn_adjust.pack(fill="x", pady=(12, 0))
 
@@ -600,15 +606,25 @@ class StopDialog(Dialog):
         self.adjust = tk.Frame(inner, bg=T["surface"])
         self.adjust.columnconfigure(0, weight=1)
         self.adjust.columnconfigure(1, weight=1)
-        self.in_start = self._field(self.adjust, "START", 0, 0)
-        self.in_end = self._field(self.adjust, "END", 0, 1)
-        self.in_dur = self._field(self.adjust, "OR DURATION IN HOURS", 1, 0, span=2)
+
+        proj_cell = tk.Frame(self.adjust, bg=T["surface"])
+        proj_cell.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        tk.Label(proj_cell, text="PROJECT", bg=T["surface"], fg=T["muted"],
+                 font=(UI, 9, "bold"), anchor="w").pack(fill="x")
+        self.in_project = ProjectPicker(proj_cell, self.projects, height=38, size=14)
+        self.in_project.pack(fill="x", pady=(4, 0))
+        self.in_project.var.set(project)
+        self.in_project.var.trace_add("write", lambda *_a: self._on_project_change())
+
+        self.in_start = self._field(self.adjust, "START", 1, 0)
+        self.in_end = self._field(self.adjust, "END", 1, 1)
+        self.in_dur = self._field(self.adjust, "OR DURATION IN HOURS", 2, 0, span=2)
         for e in (self.in_start, self.in_end):
             e.bind("<KeyRelease>", lambda _e: self._from_clocks())
         self.in_dur.bind("<KeyRelease>", lambda _e: self._from_duration())
         self.lbl_err = tk.Label(self.adjust, bg=T["surface"], fg=T["danger"],
                                 font=(UI, 11), anchor="w")
-        self.lbl_err.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        self.lbl_err.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(6, 0))
 
         self.caption("Notes")
         self.box = self.textbox(height=6)
@@ -645,14 +661,22 @@ class StopDialog(Dialog):
         entry.pack(fill="both", expand=True, padx=11)
         return entry
 
+    def _on_project_change(self):
+        name = self.in_project.get()
+        if not name:
+            return
+        self.project = name
+        self.lbl_project.config(text=name)
+        self._refresh()   # a different project means a different day bucket
+
     def _toggle_adjust(self):
         self.adjust_open = not self.adjust_open
         if self.adjust_open:
             self.adjust.pack(fill="x")
-            self.btn_adjust.set_text("Done adjusting")
+            self.btn_adjust.set_text("Done")
         else:
             self.adjust.pack_forget()
-            self.btn_adjust.set_text("Adjust time…")
+            self.btn_adjust.set_text("Adjust")
 
     def _sync_fields(self):
         for entry, value in ((self.in_start, self.start_dt.strftime('%-I:%M %p')),
@@ -738,8 +762,6 @@ class StopDialog(Dialog):
             bits.append(f"Includes {prior_same_code:.2f} h already logged that day "
                         f"under {code}. The 0.1 h round-up applies to the day's "
                         f"total, not to each session.")
-        else:
-            bits.append("Rounded up to the next 0.1 h, the way the invoice does it.")
         spill = [(d, h) for d, h in shares if d != day]
         if spill:
             parts = ", ".join(f"{h:.2f} h on {d:%b %-d}" for d, h in spill)
@@ -757,8 +779,12 @@ class StopDialog(Dialog):
         if self._hours() <= 0:
             self.lbl_err.config(text="The end time must be after the start time.")
             return
+        if not self.project.strip():
+            self.lbl_err.config(text="Pick or type a project name.")
+            return
         self.result = (self.box.get("1.0", "end").strip(),
-                       self.start_dt.isoformat(), self.end_dt.isoformat())
+                       self.start_dt.isoformat(), self.end_dt.isoformat(),
+                       self.project.strip())
         self.destroy()
 
 
@@ -1178,18 +1204,20 @@ class TimerApp:
             start = datetime.datetime.fromisoformat(paused["start_time"])
             end = datetime.datetime.fromisoformat(paused["end_time"])
 
-        dlg = StopDialog(self.root, project, start, end)
+        dlg = StopDialog(self.root, project, start, end, self.projects)
         if dlg.result is None:
             return  # cancelled — leave the timer alone
-        desc, start_iso, end_iso = dlg.result
+        desc, start_iso, end_iso, proj = dlg.result
 
         if active:
-            self._guard(lambda: db_logic.stop_timer_with(desc, start_iso, end_iso),
-                        "Could not stop timer")
+            self._guard(
+                lambda: db_logic.stop_timer_with(desc, start_iso, end_iso, proj),
+                "Could not stop timer")
         else:
             # Already closed in the DB with a '[Paused]' placeholder; overwrite it.
-            self._guard(lambda: db_logic.update_last_entry(desc, start_iso, end_iso),
-                        "Could not save entry")
+            self._guard(
+                lambda: db_logic.update_last_entry(desc, start_iso, end_iso, proj),
+                "Could not save entry")
         self.refresh(reschedule=False)
 
     def on_log_hours(self):

@@ -56,47 +56,40 @@ def stop_timer(description):
             WHERE id = (SELECT MAX(id) FROM time_logs WHERE is_active = 1)
         ''', (end_time, description))
 
-def stop_timer_with(description, start_iso=None, end_iso=None):
-    """Stop the active timer, optionally overriding its start and/or end time.
+def stop_timer_with(description, start_iso=None, end_iso=None, project=None):
+    """Stop the active timer, optionally correcting its times and project.
 
-    Used by the desktop timer window, where the stop dialog lets you correct
-    the session length before saving it.
+    Used by the desktop timer window, where the stop dialog lets you fix the
+    session before saving it. Any argument left as None keeps the stored value.
     """
     if end_iso is None:
         end_iso = datetime.datetime.now().isoformat()
     with get_db() as (conn, cursor):
-        if start_iso is None:
-            cursor.execute('''
-                UPDATE time_logs SET end_time = ?, description = ?, is_active = 0
-                WHERE id = (SELECT MAX(id) FROM time_logs WHERE is_active = 1)
-            ''', (end_iso, description))
-        else:
-            cursor.execute('''
-                UPDATE time_logs
-                SET start_time = ?, end_time = ?, description = ?, is_active = 0
-                WHERE id = (SELECT MAX(id) FROM time_logs WHERE is_active = 1)
-            ''', (start_iso, end_iso, description))
+        cursor.execute('''
+            UPDATE time_logs
+            SET end_time = ?,
+                description = ?,
+                is_active = 0,
+                start_time = COALESCE(?, start_time),
+                project_name = COALESCE(?, project_name)
+            WHERE id = (SELECT MAX(id) FROM time_logs WHERE is_active = 1)
+        ''', (end_iso, description, start_iso, project))
 
 
-def update_last_entry(description, start_iso=None, end_iso=None):
-    """Overwrite the newest row's description, and optionally its times.
+def update_last_entry(description, start_iso=None, end_iso=None, project=None):
+    """Overwrite the newest row's description, and optionally times/project.
 
     Finalises a '[Paused]' row, which is already closed in the database.
     """
     with get_db() as (conn, cursor):
-        if start_iso is None and end_iso is None:
-            cursor.execute('''
-                UPDATE time_logs SET description = ?
-                WHERE id = (SELECT MAX(id) FROM time_logs)
-            ''', (description,))
-        else:
-            cursor.execute('''
-                UPDATE time_logs
-                SET description = ?,
-                    start_time = COALESCE(?, start_time),
-                    end_time = COALESCE(?, end_time)
-                WHERE id = (SELECT MAX(id) FROM time_logs)
-            ''', (description, start_iso, end_iso))
+        cursor.execute('''
+            UPDATE time_logs
+            SET description = ?,
+                start_time = COALESCE(?, start_time),
+                end_time = COALESCE(?, end_time),
+                project_name = COALESCE(?, project_name)
+            WHERE id = (SELECT MAX(id) FROM time_logs)
+        ''', (description, start_iso, end_iso, project))
 
 
 def resume_paused_timer():

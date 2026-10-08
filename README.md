@@ -166,7 +166,7 @@ It polls the database once a second, so timers started from the menu bar app sho
    LRTM today       3.75 h    →    3.8 h billable
    ```
    These are two numbers on purpose. `generate_invoice.py` rounds up the **daily bucket**, not each session, so a per-session figure would over-bill. The app imports the rounding rule and `classify()` from the invoice script so the two can't drift apart.
-2. **Lets you correct the time** before saving — edit the start, the end, or type a duration directly; everything else recalculates live. This exists because several entries in the database carry corrections written into the notes instead ("Adjust to 2 hr 15 min for total session").
+2. **Lets you correct the entry** before saving — hit **Adjust** to edit the start, the end, the duration, or the **project**; everything else recalculates live, including the billable figure, which changes when you switch project. The time editing exists because several entries in the database carry corrections written into the notes instead ("Adjust to 2 hr 15 min for total session").
 3. **Takes multi-line notes**, and warns you when your wording would put this session under a different invoice item code than the rest of the day — which silently splits the day into two separately-rounded lines.
 
 **Make it a real Mac app (one-time):**
