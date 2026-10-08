@@ -81,6 +81,17 @@ a beat on every launch, then snapped. `_on_map` waits for the window to settle.
 labels, never the canvas buttons (a quick double-press of Stop would fire it)
 and never entry fields (it would break double-click-to-select-a-word).
 
+**The window is capped, not just resized.** `maxsize` pins the expanded height
+to the content so it cannot be dragged taller and never shows trailing white
+space, and the cap tracks the content as it changes. The width is capped too,
+at 560 — leaving it at the screen width let the green zoom button stretch the
+window right across the display, and `on_close` then saved that and restored it
+on the next launch. `sane_geometry()` clamps a remembered size on load so a
+window zoomed before that fix does not reopen huge.
+
+The window opens at 380×(content). The compact bar needs 363px of width, so
+380 clears it with margin; an earlier 430 was wider than anything required.
+
 Window geometry and the always-on-top setting persist to
 `.timer_app_settings.json`, so it reopens the way it was left.
 
@@ -97,35 +108,45 @@ hazard would teach you to hesitate over it.
 | Tone | Fill | Text | Ratio |
 |---|---|---|---|
 | `go` — start / resume | `#0e7a55` | white | 5.34:1 |
-| `hold` — pause | `#c07d0a` | ink | 5.23:1 |
+| `hold` — pause | `#a06400` | white | 4.86:1 |
 | `finish` — stop and save | `#4453c4` | white | 6.40:1 |
 | `danger` — discard | `#c02626` | white | 5.92:1 |
-| `neutral` — cancel | `#e3e7ee` | ink | 12.4:1 |
+| `neutral` — cancel | `#e3e7ee` | ink | 14.3:1 |
 
-Pause takes dark text rather than white. Amber is the one hue where white
-cannot reach 4.5:1 without darkening into brown — the first attempt,
-`#b5730a`, managed 3.87:1 — and a muddy Pause would have looked disabled
-beside the others. Pause and Resume share a button, so it recolours with its
-meaning.
+The amber is darker than a "true" amber because all four carry white text, and
+white needs 4.5:1: `#c07d0a` reached only 3.40:1. `#a06400` is the most
+saturated amber that clears it. Cancel is the one button that keeps dark text —
+it should not compete with the others. Pause and Resume share a button, so it
+recolours with its meaning: amber running, green paused.
 
-Every button is one height (`BTN_H = 46`) and one label size. An earlier mix of
-50 / 42 / 36 put different-sized buttons in rows directly above each other,
-which read as misalignment.
+Every button is one height (`BTN_H = 46`) and one label size (`BTN_SIZE = 14`);
+every text field is `FIELD_H = 44` / `FIELD_SIZE = 15`. Earlier these drifted —
+buttons at 50/42/36 in rows stacked directly on each other, fields at 38/42/44
+depending on the dialog — which read as misalignment rather than hierarchy.
 
 **Colour** — the state is carried by hue *and* lightness, never hue alone:
 
 | Token | Value | Use |
 |---|---|---|
-| `text` | `#15181f` | Primary text |
-| `muted` | `#3f4554` | Labels, meta — 9.6:1 on white |
-| `ghost` | `#9ba2af` | Idle clock: legible but clearly inactive |
+| `text` | `#15181f` | Primary text — 17.8:1 |
+| `muted` | `#3f4554` | Labels, meta — 9.6:1 |
+| `ghost` | `#848d9e` | Idle clock — 3.3:1, dimmed but legible |
 | `accent` | `#4453c4` | Primary buttons |
-| `running` | `#0e8a5f` | Running state |
-| `paused` | `#c77a00` | Paused state |
+| `running` | `#0e8a5f` | Running state dot |
+| `paused` | `#c77a00` | Paused state dot |
 
 The accent is a deepened version of the dashboard's `#5e72e4`. White text on the
 original measures ~4.2:1, under the 4.5:1 threshold at button text size; the
 darker tone clears it.
+
+An audit found `ghost` at `#9ba2af` — 2.57:1, failing even the 3:1 allowed for
+large text. Aiming for "clearly inactive" had taken the idle clock past
+invisible. The same pass pulled five hardcoded colours (the always-on-top
+switch) into tokens, so no hex literal now appears outside the palette.
+
+Status dots and the idle clock sit at 3.1–3.9:1. That is deliberate and
+correct: a dot is a graphical object and the clock is 46px — both are held to
+the 3:1 non-text/large-text threshold, not 4.5:1.
 
 **Type** — Helvetica Neue for UI, Menlo for the clock. One hero, then labels,
 then meta. Earlier drafts had too many intermediate steps, which is what made

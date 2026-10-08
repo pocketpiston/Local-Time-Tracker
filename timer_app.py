@@ -48,8 +48,21 @@ SETTLE_MS = 360
 # that sit directly above each other look misaligned.
 BTN_H = 46
 BTN_SIZE = 14
-DEFAULT_GEOMETRY = "430x530"
-DEFAULT_HEIGHT = 530
+FIELD_H = 44      # text inputs and the project picker
+FIELD_SIZE = 15
+
+# Corner rendering. Tk antialiases a splined curve but not a raw polygon fill,
+# so these stay splines; SPLINE_STEPS subdivides the same curve more finely,
+# which is the part that can be tuned without losing the antialiasing.
+# Drop RADIUS toward 4 for crisper corners on a 1x external monitor, or raise
+# it toward 10 for softer ones on a Retina panel.
+RADIUS = 7
+SPLINE_STEPS = 24
+# Back to roughly the original window: the compact bar needs 363px of width,
+# so 380 clears it with margin. The height auto-fits the content anyway.
+MIN_W, DEFAULT_W, MAX_W = 372, 380, 560
+DEFAULT_GEOMETRY = f"{DEFAULT_W}x500"
+DEFAULT_HEIGHT = 500
 # A single session longer than a day is a typo, not a work session. Bounding it
 # also keeps datetime arithmetic away from OverflowError on a mistyped figure.
 MAX_SESSION_HOURS = 24
@@ -62,8 +75,10 @@ T = {
     "border2":  "#d7dae1",
     "text":     "#15181f",
     "muted":    "#3f4554",
-    "faint":    "#7a8192",
-    "ghost":    "#9ba2af",
+    # The dimmed 0:00:00 shown when nothing is running. It has to read as
+    # inactive without becoming invisible: #9ba2af managed only 2.57:1, which
+    # fails even the 3:1 allowed for large text.
+    "ghost":    "#848d9e",
     "accent":   "#4453c4",
     "running":  "#0e8a5f",
     "runlabel": "#0b6e4c",
@@ -72,6 +87,11 @@ T = {
     "idle":     "#7a8192",
     "danger":   "#c02626",
     "shadow":   "#d2d6de",
+    "track":    "#bfc5d0",   # always-on-top switch, off
+    "trackrim": "#9aa2b1",
+    "knob":     "#ffffff",
+    "knobedge": "#e8eaef",
+    "knobcast": "#c9ced8",
 }
 
 # Semantic button fills. Darker than the matching status-dot colours, which are
@@ -80,14 +100,14 @@ T = {
 # hesitate over twenty times a day.
 TONES = {
     "go":     ("#0e7a55", "#ffffff"),   # start / resume      white 5.34:1
-    "hold":   ("#c07d0a", "#15181f"),   # pause               ink   5.23:1
+    "hold":   ("#a06400", "#ffffff"),   # pause               white 4.86:1
     "finish": ("#4453c4", "#ffffff"),   # stop and save       white 6.40:1
     "danger": ("#c02626", "#ffffff"),   # discard             white 5.92:1
     "neutral": ("#e3e7ee", "#15181f"),  # cancel / back out   ink  12.4:1
 }
-# Pause takes dark text rather than white. Amber is the one hue where white
-# can't reach 4.5:1 without darkening into brown — #b5730a managed only
-# 3.87:1 — and a muddy Pause would have looked disabled next to the others.
+# All four carry white text, which means the amber has to be darker than a
+# "true" amber: white needs 4.5:1, and #c07d0a reached only 3.40:1. #a06400 is
+# the most saturated amber that still clears it, at 4.86:1.
 
 UI = "Helvetica Neue"
 MONO = "Menlo"
@@ -151,7 +171,7 @@ def billable(hours):
 # macOS ignores background colours on native tk/ttk buttons, so the controls
 # below are drawn on canvases to get a consistent, themeable look.
 class Button(tk.Canvas):
-    def __init__(self, parent, text, command, kind="secondary", height=46, size=15,
+    def __init__(self, parent, text, command, kind="secondary", height=BTN_H, size=BTN_SIZE,
                  shadow=False, tone=None):
         self.kind = "primary" if tone else kind
         self.shadow = shadow and self.kind != "ghost"
@@ -186,12 +206,13 @@ class Button(tk.Canvas):
             # A soft drop shadow: one offset rounded rect behind the face.
             # Tk has no real blur, so the face is lifted 3px to leave it room.
             tint = shade(self.fill, 0.72) if self.kind == "primary" else T["shadow"]
-            self.create_polygon(rounded_points(2, 4, w - 2, h - 1, 9), smooth=True,
-                                fill=tint, outline=tint)
+            self.create_polygon(rounded_points(2, 4, w - 2, h - 1, RADIUS), smooth=True,
+                                splinesteps=SPLINE_STEPS, fill=tint, outline=tint)
             bottom = h - 4
         if self.kind != "ghost":
-            self.create_polygon(rounded_points(1, 1, w - 1, bottom, 9), smooth=True,
-                                fill=self._fill, outline=self.outline or self._fill)
+            self.create_polygon(rounded_points(1, 1, w - 1, bottom, RADIUS), smooth=True,
+                                splinesteps=SPLINE_STEPS, fill=self._fill,
+                                outline=self.outline or self._fill)
         self.create_text(w / 2, (1 + bottom) / 2 + 1, text=self.text,
                          fill=self.fg, font=self.font)
 
@@ -243,19 +264,21 @@ class Toggle(tk.Canvas):
         radius = (self.H - 2) / 2
         # The off state was near-white on a white window and easy to miss, so
         # the track is darker with a rim, and the knob carries a shadow.
-        track = T["accent"] if self.value else "#bfc5d0"
-        rim = shade(T["accent"], 0.82) if self.value else "#9aa2b1"
+        track = T["accent"] if self.value else T["track"]
+        rim = shade(T["accent"], 0.82) if self.value else T["trackrim"]
         self.create_polygon(rounded_points(2, 3, self.W - 1, self.H - 1, radius),
-                            smooth=True, fill=T["shadow"], outline=T["shadow"])
+                            smooth=True, splinesteps=SPLINE_STEPS,
+                            fill=T["shadow"], outline=T["shadow"])
         self.create_polygon(rounded_points(1, 1, self.W - 2, self.H - 3, radius),
-                            smooth=True, fill=track, outline=rim)
+                            smooth=True, splinesteps=SPLINE_STEPS,
+                            fill=track, outline=rim)
         r = (self.H - 10) / 2
         cx = (self.W - 7 - r) if self.value else (6 + r)
         cy = (self.H - 2) / 2
         self.create_oval(cx - r, cy - r + 1, cx + r, cy + r + 1,
-                         fill="#c9ced8", outline="")      # knob shadow
+                         fill=T["knobcast"], outline="")      # knob shadow
         self.create_oval(cx - r, cy - r, cx + r, cy + r,
-                         fill="#ffffff", outline="#e8eaef")
+                         fill=T["knob"], outline=T["knobedge"])
 
     def _click(self, _e):
         self.value = not self.value
@@ -353,7 +376,7 @@ class Dropdown(tk.Toplevel):
 class ProjectPicker(tk.Frame):
     """Bordered text field with a dropdown — type a new project or pick a preset."""
 
-    def __init__(self, parent, projects, height=44, size=17):
+    def __init__(self, parent, projects, height=FIELD_H, size=FIELD_SIZE):
         super().__init__(parent, bg=T["bg"], highlightthickness=1,
                          highlightbackground=T["border2"], height=height)
         self.pack_propagate(False)
@@ -405,6 +428,23 @@ def save_settings(data):
             json.dump(data, f)
     except Exception:
         pass  # a settings write failure should never break the app
+
+
+def sane_geometry(spec):
+    """Clamp a remembered geometry back into a usable range.
+
+    A window that was zoomed before this was capped saved its stretched size,
+    and restoring that verbatim reopened the app across the whole screen.
+    Width is clamped and the position kept; the height is re-fitted on open.
+    """
+    if not spec:
+        return DEFAULT_GEOMETRY
+    m = re.match(r'^(\d+)x(\d+)([+-]\d+[+-]\d+)?$', spec.strip())
+    if not m:
+        return DEFAULT_GEOMETRY
+    w = max(MIN_W, min(int(m.group(1)), MAX_W))
+    h = max(118, int(m.group(2)))
+    return f"{w}x{h}{m.group(3) or ''}"
 
 
 def paused_row():
@@ -740,7 +780,7 @@ class AdjustStartDialog(Dialog):
 
         self.caption("Or type an amount")
         wrap = tk.Frame(self.body, bg=T["bg"], highlightthickness=1,
-                        highlightbackground=T["border2"], height=42)
+                        highlightbackground=T["border2"], height=FIELD_H)
         wrap.pack(fill="x")
         wrap.pack_propagate(False)
         self.entry = tk.Entry(wrap, bd=0, relief="flat", bg=T["bg"], fg=T["text"],
@@ -838,7 +878,7 @@ class StopDialog(Dialog):
         inner.pack(fill="x", padx=16, pady=14)
 
         self.lbl_project = tk.Label(inner, text=project, bg=T["surface"],
-                                    fg=T["text"], font=(UI, 17, "bold"), anchor="w")
+                                    fg=T["text"], font=(UI, 16, "bold"), anchor="w")
         self.lbl_project.pack(fill="x")
 
         row = tk.Frame(inner, bg=T["surface"])
@@ -876,7 +916,7 @@ class StopDialog(Dialog):
         proj_cell.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         tk.Label(proj_cell, text="PROJECT", bg=T["surface"], fg=T["muted"],
                  font=(UI, 9, "bold"), anchor="w").pack(fill="x")
-        self.in_project = ProjectPicker(proj_cell, self.projects, height=38, size=14)
+        self.in_project = ProjectPicker(proj_cell, self.projects)
         self.in_project.pack(fill="x", pady=(4, 0))
         self.in_project.var.set(project)
         self.in_project.var.trace_add("write", lambda *_a: self._on_project_change())
@@ -916,7 +956,7 @@ class StopDialog(Dialog):
         tk.Label(cell, text=label, bg=T["surface"], fg=T["muted"],
                  font=(UI, 9, "bold"), anchor="w").pack(fill="x")
         wrap = tk.Frame(cell, bg=T["bg"], highlightthickness=1,
-                        highlightbackground=T["border2"], height=38)
+                        highlightbackground=T["border2"], height=FIELD_H)
         wrap.pack(fill="x", pady=(4, 0))
         wrap.pack_propagate(False)
         entry = tk.Entry(wrap, bd=0, relief="flat", bg=T["bg"], fg=T["text"],
@@ -1073,12 +1113,12 @@ class LogHoursDialog(Dialog):
         super().__init__(parent, "Log Hours", 430, 460)
         self.heading("Log hours manually")
         self.caption("Project", pady=(16, 7))
-        self.picker = ProjectPicker(self.body, projects, height=44, size=17)
+        self.picker = ProjectPicker(self.body, projects)
         self.picker.pack(fill="x")
 
         self.caption("Hours")
         wrap = tk.Frame(self.body, bg=T["bg"], highlightthickness=1,
-                        highlightbackground=T["border2"], height=44)
+                        highlightbackground=T["border2"], height=FIELD_H)
         wrap.pack(fill="x")
         wrap.pack_propagate(False)
         self.hours = tk.Entry(wrap, bd=0, relief="flat", bg=T["bg"], fg=T["text"],
@@ -1139,11 +1179,11 @@ class ExpandedView(tk.Frame):
         tk.Label(wrap, text="PROJECT", bg=T["bg"], fg=T["muted"],
                  font=(UI, 11, "bold"), anchor="w").pack(fill="x", pady=(16, 0))
 
-        zone = tk.Frame(wrap, bg=T["bg"], height=44)
+        zone = tk.Frame(wrap, bg=T["bg"], height=FIELD_H)
         zone.pack(fill="x", pady=(7, 0))
         zone.pack_propagate(False)
         self.project = tk.Label(zone, text="—", bg=T["bg"], fg=T["text"],
-                                font=(UI, 20, "bold"), anchor="w")
+                                font=(UI, 19, "bold"), anchor="w")
         self.picker = ProjectPicker(zone, app.projects)
 
         self.clock = tk.Label(wrap, text="0:00:00", bg=T["bg"], fg=T["ghost"],
@@ -1333,8 +1373,8 @@ class TimerApp:
 
         root.title("Time Tracker")
         root.configure(bg=T["bg"])
-        root.geometry(self.settings.get("geometry", DEFAULT_GEOMETRY))
-        root.minsize(430, 118)
+        root.geometry(sane_geometry(self.settings.get("geometry")))
+        root.minsize(MIN_W, 118)
 
         self.expanded = ExpandedView(root, self)
         self.compact = CompactView(root, self)
@@ -1375,7 +1415,10 @@ class TimerApp:
         self.root.update_idletasks()
         need = min(self.expanded.winfo_reqheight(),
                    self.root.winfo_screenheight() - 140)
-        self.root.maxsize(self.root.winfo_screenwidth(), need)
+        # Cap the width too. Leaving it at the screen width let the green zoom
+        # button stretch the window right across the display — and the result
+        # was then saved and restored on the next launch.
+        self.root.maxsize(MAX_W, need)
         if self._layout == "expanded" and (exact or self.root.winfo_height() < need):
             self.root.geometry(f"{self.root.winfo_width()}x{need}")
 
@@ -1384,7 +1427,7 @@ class TimerApp:
         if self._layout == "expanded":
             self.settings["geometry"] = self.root.winfo_geometry()
             save_settings(self.settings)
-            self.root.geometry(f"{max(self.root.winfo_width(), 430)}x{COMPACT_HEIGHT}")
+            self.root.geometry(f"{max(self.root.winfo_width(), MIN_W)}x{COMPACT_HEIGHT}")
             self._set_layout("compact")
         else:
             spec = self.settings.get("geometry", DEFAULT_GEOMETRY)
@@ -1394,7 +1437,7 @@ class TimerApp:
                 tall = DEFAULT_HEIGHT
             if tall < EXPAND_ABOVE:          # last saved size was itself compact
                 tall = DEFAULT_HEIGHT
-            self.root.geometry(f"{max(self.root.winfo_width(), 430)}x{tall}")
+            self.root.geometry(f"{max(self.root.winfo_width(), MIN_W)}x{tall}")
             self._set_layout("expanded")
             self.fit_height(exact=True)
 
