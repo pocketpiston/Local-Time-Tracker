@@ -154,7 +154,7 @@ Two ways to switch:
 * **Pause / Resume** and **Stop** (see the stop dialog below).
 * **Adjust start** — pulls a running timer's start time backwards, for when you began working before you remembered to hit start. Quick −5 / −15 / −30 buttons, or type the same forms the menu bar app accepts: `45`, `15m`, `2h`, `1.5h`, or a time like `10:30`.
 * **Discard** — deletes a timer started by mistake without logging anything. Asks first, and names the project and elapsed time so you know what you're throwing away.
-* **➕ Log Hours Manually** — project, hours (e.g. `5.5`), and an optional description, saved ending now.
+* **➕ Log Hours Manually** — project, **date**, hours (e.g. `5.5`), and an optional description. Click the date field to pick from a calendar; future days are shown but not selectable. Entries on today end at the current time, earlier days end at 5:00 PM. A live preview shows the resulting span and what the day will bill, including hours already logged against it.
 * **Today** and **This Week** running totals.
 * **Always on top** — the window floats above other apps' windows. Remembered between launches. Note it won't follow you to another macOS *Space*; Tk doesn't expose that setting.
 

@@ -256,7 +256,45 @@ corrections written into the notes — *"Adjust to 2 hr 15 min for total session
 *"End time ~11:30 pm. Need to update hours."* Fixing it at the moment of
 stopping stops it becoming a note-to-self.
 
-## 8. Packaging
+## 8. Picking a date
+
+Logging hours needs a date, and Tk ships no date widget. `tkcalendar` would
+have done it, but the app has no dependencies beyond the standard library and
+that seemed worth keeping for one control, so `CalendarPopup` draws a month
+grid from the `calendar` module using the same popup mechanics as the project
+dropdown.
+
+**The field is a dropdown, not a stepper.** The first attempt put `‹ ›` day
+arrows *and* a calendar caret in the field, with "· today" inline — four
+controls for one value, sitting directly below a Project dropdown that uses
+one. It now matches that dropdown exactly: same height, same type, same inset,
+one caret, click anywhere to open. The calendar's own Today button covers what
+the arrows were for.
+
+Two rules the grid enforces:
+
+- **Future days are shown but inert** — you cannot log time you have not
+  worked. Paging forward stops at the current month too; greying the arrow was
+  not enough on its own, since the grid still moved and showed a month with
+  nothing selectable in it.
+- **Grey means exactly one thing.** Days from the adjacent month are
+  selectable, so they use the muted tone and highlight on hover; only
+  unreachable future days get the ghost tone. Using one colour for "you can"
+  and "you can't" would have sent people month-hopping for a day already on
+  screen.
+
+An entry on today ends at the current time; an earlier day ends at 5pm.
+
+**The midnight bug, a second time.** The preview first added the whole figure
+to the day's bucket — the same mistake section 7 describes, reintroduced in a
+new dialog. Twenty hours logged against a day ending at 5pm starts at 9pm the
+day before, and the invoice bills 17h on one day and 3h on the other. It now
+uses the same `session_share()` the stop dialog does, and says so when an entry
+runs back past midnight. Worth noting that this class of error does not stay
+fixed on its own: any new surface that shows a billable figure has to go
+through `day_shares()`.
+
+## 9. Packaging
 
 `build_app.sh` builds `Time Tracker.app` using only macOS's `sips`/`iconutil`,
 so the Dock and menu bar show the project name and icon instead of "Python".
@@ -271,7 +309,7 @@ Two traps, both worth keeping in mind if the icon is ever replaced:
 
 The bundle points back at the project folder, so code edits need no rebuild.
 
-## 9. Known limitations
+## 10. Known limitations
 
 - **Always on top** keeps the window above other *windows*, but Tk does not
   expose macOS's "show on all Spaces" behaviour, so it will not follow you to
@@ -282,7 +320,7 @@ The bundle points back at the project folder, so code edits need no rebuild.
 - The window polls the database once a second rather than watching it. Cheap at
   this size, but it is polling.
 
-## 10. Testing notes
+## 11. Testing notes
 
 All database behaviour was exercised against **copies** of `time_tracker.db`,
 never the live file. Worth repeating for future changes — `save_data` and the
