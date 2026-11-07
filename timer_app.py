@@ -14,6 +14,7 @@ Run it with:
 """
 
 import datetime
+import calendar
 import json
 import math
 import os
@@ -287,7 +288,46 @@ class Toggle(tk.Canvas):
             self.command(self.value)
 
 
-class Dropdown(tk.Toplevel):
+class Popup(tk.Toplevel):
+    """Grab and focus handling shared by the dropdown and the calendar.
+
+    A popup has to hand back BOTH the grab and the keyboard. Restoring only
+    the grab leaves focus_get() as None, and the field behind the popup then
+    silently refuses input until it is clicked — which reads as the window
+    hanging for a moment after you pick something.
+    """
+
+    def claim(self, anchor):
+        top = anchor.winfo_toplevel()
+        self._prev_grab = top.grab_current()
+        # Fall back to the window itself: on a surface where nothing was
+        # focused there is nothing to give back, and the keyboard would be
+        # left ownerless exactly as if we had restored nothing at all.
+        self._prev_focus = top.focus_get() or top
+        self.grab_set()
+        self.focus_force()      # overrideredirect windows get no focus otherwise
+
+    def release(self):
+        prev_grab = getattr(self, "_prev_grab", None)
+        prev_focus = getattr(self, "_prev_focus", None)
+        try:
+            self.grab_release()
+        except tk.TclError:
+            pass
+        self.destroy()
+        for widget, restore in ((prev_grab, "grab_set"),
+                                (prev_grab, "focus_force"),
+                                (prev_focus, "focus_set")):
+            if widget is None or not str(widget):
+                continue
+            try:
+                if widget.winfo_exists():
+                    getattr(widget, restore)()
+            except tk.TclError:
+                pass
+
+
+class Dropdown(Popup):
     """A styled list that opens directly beneath its field.
 
     Tk's own tk_popup renders the native macOS context menu: it can't be
@@ -299,10 +339,6 @@ class Dropdown(tk.Toplevel):
     def __init__(self, anchor, items, on_pick, max_rows=8):
         super().__init__(anchor.winfo_toplevel())
         self.on_pick = on_pick
-        # Taking the grab below steals it from a modal parent; remember who had
-        # it so closing can hand it back, or that dialog silently stops being
-        # modal and the window behind it becomes clickable again.
-        self._prev_grab = anchor.winfo_toplevel().grab_current()
         # Hide while building. A Toplevel is mapped as soon as it exists, so
         # without this macOS first places it at its own default spot — which is
         # where it stays visible, to the side of the field it belongs under.
@@ -342,14 +378,13 @@ class Dropdown(tk.Toplevel):
 
         self.bind("<Escape>", lambda _e: self.close())
         self.bind("<Button-1>", self._outside, add="+")
-        self.grab_set()
-        # An overrideredirect window is not given focus by the window manager,
-        # so without this the Escape binding never receives a key event.
-        self.focus_force()
+        self.claim(anchor)
 
     def _pick(self, value):
-        self.on_pick(value)
+        # Close first: release() restores the previous focus, so a callback
+        # that wants the caret somewhere else has to run after it, not before.
         self.close()
+        self.on_pick(value)
 
     def _outside(self, event):
         # While grabbed, a click anywhere else is delivered here with
@@ -359,18 +394,160 @@ class Dropdown(tk.Toplevel):
             self.close()
 
     def close(self):
-        try:
-            self.grab_release()
-        except tk.TclError:
-            pass
-        prev = self._prev_grab
-        self.destroy()
-        if prev is not None and str(prev):
-            try:
-                if prev.winfo_exists():
-                    prev.grab_set()
-            except tk.TclError:
-                pass
+        self.release()
+
+
+class CalendarPopup(Popup):
+    """A month grid that opens under its field.
+
+    Tk ships no date widget and tkcalendar would be a new dependency, so this
+    is drawn from the standard library's calendar module. Future days are
+    shown but not selectable — you cannot log time you have not worked yet.
+    """
+
+    CELL_W, CELL_H = 36, 32
+
+    def __init__(self, anchor, selected, on_pick, first_weekday=6):
+        super().__init__(anchor.winfo_toplevel())
+        self.on_pick = on_pick
+        self.selected = selected
+        self.shown = selected.replace(day=1)
+        self.today = datetime.date.today()
+        self.cal = calendar.Calendar(firstweekday=first_weekday)
+
+        self.withdraw()
+        self.overrideredirect(True)
+        self.configure(bg=T["border2"])
+        body = tk.Frame(self, bg=T["bg"])
+        body.pack(fill="both", expand=True, padx=1, pady=1)
+
+        head = tk.Frame(body, bg=T["bg"])
+        head.pack(fill="x", pady=(8, 2))
+        prev = tk.Label(head, text="‹", bg=T["bg"], fg=T["muted"], font=(UI, 17),
+                        cursor="pointinghand", padx=12)
+        prev.pack(side="left")
+        self.nxt = tk.Label(head, text="›", bg=T["bg"], fg=T["muted"], font=(UI, 17),
+                            cursor="pointinghand", padx=12)
+        self.nxt.pack(side="right")
+        self.lbl_month = tk.Label(head, bg=T["bg"], fg=T["text"], font=(UI, 14, "bold"))
+        self.lbl_month.pack(side="left", fill="x", expand=True)
+        prev.bind("<Button-1>", lambda _e: self._month(-1))
+        self.nxt.bind("<Button-1>", lambda _e: self._month(1))
+
+        days = tk.Frame(body, bg=T["bg"])
+        days.pack(padx=8)
+        names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+        order = [names[(first_weekday + i) % 7][:2] for i in range(7)]
+        for i, nm in enumerate(order):
+            tk.Label(days, text=nm, bg=T["bg"], fg=T["muted"], font=(UI, 10, "bold"),
+                     width=4).grid(row=0, column=i, pady=(0, 2))
+
+        self.cells = []
+        for rr in range(6):
+            row = []
+            for cc in range(7):
+                lab = tk.Label(days, bg=T["bg"], font=(UI, 13), width=4,
+                               height=1, cursor="pointinghand")
+                lab.grid(row=rr + 1, column=cc, padx=1, pady=1)
+                lab.bind("<Button-1>", lambda _e, w=rr, d=cc: self._click(w, d))
+                lab.bind("<Enter>", lambda _e, l=lab: self._hover(l, True))
+                lab.bind("<Leave>", lambda _e, l=lab: self._hover(l, False))
+                row.append(lab)
+            self.cells.append(row)
+
+        foot = tk.Frame(body, bg=T["bg"])
+        foot.pack(fill="x", padx=8, pady=(4, 8))
+        t = tk.Label(foot, text="Today", bg=T["bg"], fg=T["accent"],
+                     font=(UI, 12, "bold"), cursor="pointinghand")
+        t.pack(side="left")
+        t.bind("<Button-1>", lambda _e: self._pick(self.today))
+
+        self._render()
+        anchor.update_idletasks()
+        self.update_idletasks()
+        w, h = self.winfo_reqwidth(), self.winfo_reqheight()
+        x = anchor.winfo_rootx()
+        y = anchor.winfo_rooty() + anchor.winfo_height() + 4
+        if y + h > self.winfo_screenheight() - 8:
+            y = max(anchor.winfo_rooty() - h - 4, 8)
+        self.geometry(f"{w}x{h}+{x}+{y}")
+        self.deiconify()
+        self.attributes('-topmost', True)
+        self.lift()
+        self.bind("<Escape>", lambda _e: self.close())
+        self.bind("<Button-1>", self._outside, add="+")
+        self.claim(anchor)
+
+    def _month(self, step):
+        m = self.shown.month + step
+        y = self.shown.year + (m - 1) // 12
+        target = datetime.date(y, (m - 1) % 12 + 1, 1)
+        # Greying the arrow is not enough — stop the move as well, or the grid
+        # pages into months that contain nothing selectable.
+        if target > self.today.replace(day=1):
+            return
+        self.shown = target
+        self._render()
+
+    def _render(self):
+        self.lbl_month.config(text=self.shown.strftime("%B %Y"))
+        first_next = (self.shown.replace(day=28) + datetime.timedelta(days=4)).replace(day=1)
+        self.nxt.config(fg=T["ghost"] if first_next > self.today else T["muted"])
+        weeks = self.cal.monthdatescalendar(self.shown.year, self.shown.month)
+        self.grid_dates = []
+        for rr in range(6):
+            row = []
+            for cc in range(7):
+                lab = self.cells[rr][cc]
+                if rr < len(weeks):
+                    d = weeks[rr][cc]
+                    row.append(d)
+                    outside = d.month != self.shown.month
+                    future = d > self.today
+                    lab.config(text=str(d.day))
+                    if d == self.selected:
+                        lab.config(bg=T["accent"], fg="#ffffff", font=(UI, 13, "bold"))
+                    elif future:
+                        lab.config(bg=T["bg"], fg=T["ghost"], font=(UI, 13))
+                    elif d == self.today:
+                        lab.config(bg=T["surface"], fg=T["accent"], font=(UI, 13, "bold"))
+                    elif outside:
+                        # Selectable, so it must not share the greyed-out tone
+                        # used for future days — same colour for "you can" and
+                        # "you can't" sends people month-hopping needlessly.
+                        lab.config(bg=T["bg"], fg=T["muted"], font=(UI, 13))
+                    else:
+                        lab.config(bg=T["bg"], fg=T["text"], font=(UI, 13))
+                else:
+                    row.append(None)
+                    lab.config(text="", bg=T["bg"])
+            self.grid_dates.append(row)
+
+    def _hover(self, lab, on):
+        # Leave the selected day and unreachable future days alone
+        if lab.cget("bg") in (T["accent"],) or lab.cget("fg") == T["ghost"]:
+            return
+        lab.config(bg=T["surface"] if on else T["bg"])
+
+    def _click(self, rr, cc):
+        d = self.grid_dates[rr][cc]
+        if d is None or d > self.today:
+            return
+        self._pick(d)
+
+    def _pick(self, d):
+        # Close first, for the same reason as Dropdown._pick: release()
+        # restores the previous focus, so the callback has to run after it.
+        self.close()
+        self.on_pick(d)
+
+    def _outside(self, event):
+        if event.widget is self and not (
+                0 <= event.x < self.winfo_width() and 0 <= event.y < self.winfo_height()):
+            self.close()
+
+    def close(self):
+        self.release()
 
 
 class ProjectPicker(tk.Frame):
@@ -399,7 +576,18 @@ class ProjectPicker(tk.Frame):
             return
         if not self.projects:
             return
-        self._menu = Dropdown(self, self.projects, self.var.set)
+        self._menu = Dropdown(self, self.projects, self._choose)
+
+    def _choose(self, value):
+        """Take the picked name and leave the caret in the field.
+
+        The field is editable, so picking a preset and then adjusting it is a
+        reasonable thing to do; without this the keyboard goes nowhere until
+        the field is clicked again.
+        """
+        self.var.set(value)
+        self.entry.focus_set()
+        self.entry.icursor("end")
 
     def get(self):
         return self.var.get().strip()
@@ -448,12 +636,16 @@ def sane_geometry(spec):
 
 
 def paused_row():
-    """Full paused row (project, start, end) or None."""
+    """The pause still in progress (project, start, end), or None.
+
+    Keyed on the newest '[Paused]' row rather than the newest row overall —
+    see db_logic.get_paused_timer() for why.
+    """
     with db_logic.get_db() as (conn, cursor):
         cursor.execute('''
             SELECT project_name, start_time, end_time FROM time_logs
-            WHERE id = (SELECT MAX(id) FROM time_logs)
-              AND is_active = 0 AND description = '[Paused]'
+            WHERE is_active = 0 AND description = '[Paused]'
+            ORDER BY id DESC LIMIT 1
         ''')
         row = cursor.fetchone()
     return None if not row else {"project_name": row[0], "start_time": row[1],
@@ -651,6 +843,23 @@ class Dialog(tk.Toplevel):
         box.pack(fill="both", expand=True)
         return box
 
+    def show(self, focus_widget=None):
+        """Become modal and take the keyboard, then block until dismissed.
+
+        grab_set() alone blocks clicks elsewhere without making the window the
+        key window, so for a moment nobody owns the keyboard: focus_get() comes
+        back None and typing does nothing until macOS promotes the window — a
+        click, or whenever the window manager gets round to it. That delay is
+        what made the Hours field feel dead on opening. focus_force() claims it
+        immediately, the same fix the dropdown and calendar popups already use.
+        """
+        self.update_idletasks()
+        self.grab_set()
+        self.focus_force()
+        if focus_widget is not None:
+            focus_widget.focus_set()
+        self.wait_window(self)
+
     def fit(self):
         """Resize to the content, bounded by the screen.
 
@@ -696,8 +905,7 @@ class Notice(Dialog):
         row.pack(fill="x", side="bottom")
         Button(row, "OK", self._cancel, tone="finish", height=BTN_H,
                size=BTN_SIZE, shadow=True).pack(fill="x")
-        self.grab_set()
-        self.wait_window(self)
+        self.show()
 
 
 class ConfirmDialog(Dialog):
@@ -718,8 +926,7 @@ class ConfirmDialog(Dialog):
         Button(row, confirm, self._ok, tone="danger", height=BTN_H,
                size=BTN_SIZE, shadow=True).grid(row=0, column=1, sticky="ew", padx=(5, 0))
         self.fit()
-        self.grab_set()
-        self.wait_window(self)
+        self.show()
 
     def _ok(self):
         self.result = True
@@ -745,8 +952,7 @@ class ChoiceDialog(Dialog):
             Button(self.body, label, lambda v=value: self._pick(v), tone=tone,
                    height=BTN_H, size=BTN_SIZE, shadow=True).pack(fill="x", pady=(0, 8))
         self.fit()
-        self.grab_set()
-        self.wait_window(self)
+        self.show()
 
     def _pick(self, value):
         self.result = value
@@ -802,9 +1008,7 @@ class AdjustStartDialog(Dialog):
         self.buttons("Save")
         self._preview()
         self.fit()
-        self.entry.focus_set()
-        self.grab_set()
-        self.wait_window(self)
+        self.show(self.entry)
 
     def _shift(self, minutes):
         self.new_start = self.new_start - datetime.timedelta(minutes=minutes)
@@ -944,9 +1148,7 @@ class StopDialog(Dialog):
         self._sync_fields()
         self._refresh()
         self.fit()
-        self.box.focus_set()
-        self.grab_set()
-        self.wait_window(self)
+        self.show(self.box)
 
     def _field(self, parent, label, row, col, span=1):
         cell = tk.Frame(parent, bg=T["surface"])
@@ -1109,12 +1311,45 @@ class StopDialog(Dialog):
 
 
 class LogHoursDialog(Dialog):
+    """Record hours already worked, on any day.
+
+    The date is a stepper showing the day written out, not a typed field.
+    This project's invoices render dates as dd/mm/yyyy, so a typed "03/11"
+    would be genuinely ambiguous between 3 November and 11 March — a quiet
+    way to bill the wrong month. Spelling the day out removes the guess.
+    """
+
+    END_OF_DAY = datetime.time(17, 0)   # past days end here; today ends now
+
     def __init__(self, parent, projects):
-        super().__init__(parent, "Log Hours", 430, 460)
+        super().__init__(parent, "Log Hours", 430, 560)
+        self.resizable(False, True)
+        self.day = datetime.date.today()
+        self._cal = None
+
         self.heading("Log hours manually")
         self.caption("Project", pady=(16, 7))
         self.picker = ProjectPicker(self.body, projects)
         self.picker.pack(fill="x")
+        self.picker.var.trace_add("write", lambda *_a: self._preview())
+
+        self.caption("Date")
+        # Built like ProjectPicker above it — one caret, click anywhere to open.
+        # An earlier version carried ‹ › steppers as well as the caret: four
+        # controls for one value, and nothing else in the dialog looked like it.
+        date_row = tk.Frame(self.body, bg=T["bg"], highlightthickness=1,
+                            highlightbackground=T["border2"], height=FIELD_H)
+        date_row.pack(fill="x")
+        date_row.pack_propagate(False)
+        self.date_row = date_row
+        self.caret = tk.Label(date_row, text="⌄", bg=T["bg"], fg=T["muted"],
+                              font=(UI, 16), cursor="pointinghand")
+        self.caret.pack(side="right", padx=(0, 13))
+        self.lbl_day = tk.Label(date_row, bg=T["bg"], fg=T["text"], anchor="w",
+                                font=(UI, FIELD_SIZE, "bold"), cursor="pointinghand")
+        self.lbl_day.pack(side="left", fill="both", expand=True, padx=(13, 0))
+        for w in (date_row, self.lbl_day, self.caret):
+            w.bind("<Button-1>", lambda _e: self._open_calendar())
 
         self.caption("Hours")
         wrap = tk.Frame(self.body, bg=T["bg"], highlightthickness=1,
@@ -1122,19 +1357,89 @@ class LogHoursDialog(Dialog):
         wrap.pack(fill="x")
         wrap.pack_propagate(False)
         self.hours = tk.Entry(wrap, bd=0, relief="flat", bg=T["bg"], fg=T["text"],
-                              highlightthickness=0, font=(UI, 15, "bold"),
+                              highlightthickness=0, font=(UI, FIELD_SIZE, "bold"),
                               insertbackground=T["text"])
         self.hours.pack(fill="both", expand=True, padx=13)
+        self.hours.bind("<KeyRelease>", lambda _e: self._preview())
+
+        self.lbl_preview = tk.Label(self.body, bg=T["bg"], fg=T["muted"],
+                                    font=(UI, 12), anchor="w", justify="left",
+                                    wraplength=370)
+        self.lbl_preview.pack(fill="x", pady=(8, 0))
 
         self.caption("Description (optional)")
         self.desc = self.textbox(height=4)
+        self.desc.bind("<KeyRelease>", lambda _e: self._preview())
         self.lbl_err = tk.Label(self.body, bg=T["bg"], fg=T["danger"],
                                 font=(UI, 11), anchor="w")
         self.lbl_err.pack(fill="x", pady=(7, 0))
         self.buttons("Log hours")
+
+        self._render_day()
+        self.fit()
+        self.show(self.hours)
+
+    # ── Date ────────────────────────────────────────────────────────
+    def _open_calendar(self):
+        if self._cal is not None and self._cal.winfo_exists():
+            self._cal.close()
+            self._cal = None
+            return
+        self._cal = CalendarPopup(self.date_row, self.day, self._set_day)
+
+    def _set_day(self, day):
+        self.day = day
+        self._cal = None
+        self._render_day()
+        # _render_day resizes the dialog, which drops focus back to the window
+        # itself. Put the caret where the next keystroke belongs anyway.
         self.hours.focus_set()
-        self.grab_set()
-        self.wait_window(self)
+        self.hours.icursor("end")
+
+    def _render_day(self):
+        self.lbl_day.config(text=self.day.strftime('%-d %b %Y'))
+        self._preview()
+
+    def end_datetime(self):
+        """When the entry finishes: now for today, 5pm for an earlier day."""
+        if self.day == datetime.date.today():
+            return datetime.datetime.now().replace(microsecond=0)
+        return datetime.datetime.combine(self.day, self.END_OF_DAY)
+
+    # ── Preview ─────────────────────────────────────────────────────
+    def _preview(self):
+        project = self.picker.get()
+        try:
+            hours = float(self.hours.get().strip())
+        except ValueError:
+            self.lbl_preview.config(text="")
+            return
+        if not (0 < hours <= MAX_SESSION_HOURS):
+            self.lbl_preview.config(text="")
+            return
+        end = self.end_datetime()
+        start = end - datetime.timedelta(hours=hours)
+        line = f"{start:%-I:%M %p} → {end:%-I:%M %p}"
+        if start.date() != end.date():
+            line += f"  (starts {start:%a %-d %b})"
+        if project and project not in EXCLUDE_PROJECTS:
+            code = classify(self.desc.get("1.0", "end").strip())
+            prior, _ = day_bucket(project, self.day, item_code=code)
+            # Only the share the invoice bills on this day. Adding the whole
+            # figure overstates it whenever the entry runs back past midnight,
+            # which it does as soon as the hours exceed the time since.
+            this_day = session_share(start, end, self.day)
+            total = prior + this_day
+            line += f"\n{project} {self.day:%b %-d}:  {total:.2f} h  →  " \
+                    f"{billable(total):.1f} h billable"
+            if prior > 0:
+                line += f"   (includes {prior:.2f} h already logged)"
+            spill = [(d, h) for d, h in day_shares(start, end) if d != self.day]
+            if spill:
+                parts = ", ".join(f"{h:.2f} h on {d:%-d %b}" for d, h in spill)
+                line += f"\nRuns back past midnight — {parts} bills separately."
+        self.lbl_preview.config(text=line)
+        self.fit()   # the preview can grow to three lines
 
     def _ok(self):
         project = self.picker.get()
@@ -1154,7 +1459,8 @@ class LogHoursDialog(Dialog):
                 text=f"That's over {MAX_SESSION_HOURS} h — check the figure, "
                      f"or split it across days.")
             return
-        self.result = (project, hours, self.desc.get("1.0", "end").strip())
+        self.result = (project, hours, self.desc.get("1.0", "end").strip(),
+                       self.end_datetime())
         self.destroy()
 
 
@@ -1644,11 +1950,14 @@ class TimerApp:
         dlg = LogHoursDialog(self.root, self.projects)
         if dlg.result is None:
             return
-        project, hours, desc = dlg.result
-        if self._guard(lambda: db_logic.add_manual_log(project, hours, desc),
+        project, hours, desc, end = dlg.result
+        if self._guard(lambda: db_logic.add_manual_log(project, hours, desc, end),
                        "Could not save entry"):
+            when = ("today" if end.date() == datetime.date.today()
+                    else f"on {end:%a %-d %b}")
             Notice(self.root, "Hours logged",
-                   f"Added {hours}h to “{project}”, ending now.")
+                   f"Added {hours}h to “{project}” {when}, "
+                   f"ending {end:%-I:%M %p}.")
         self.refresh(reschedule=False)
 
     def on_close(self):
