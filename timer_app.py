@@ -288,7 +288,46 @@ class Toggle(tk.Canvas):
             self.command(self.value)
 
 
-class Dropdown(tk.Toplevel):
+class Popup(tk.Toplevel):
+    """Grab and focus handling shared by the dropdown and the calendar.
+
+    A popup has to hand back BOTH the grab and the keyboard. Restoring only
+    the grab leaves focus_get() as None, and the field behind the popup then
+    silently refuses input until it is clicked — which reads as the window
+    hanging for a moment after you pick something.
+    """
+
+    def claim(self, anchor):
+        top = anchor.winfo_toplevel()
+        self._prev_grab = top.grab_current()
+        # Fall back to the window itself: on a surface where nothing was
+        # focused there is nothing to give back, and the keyboard would be
+        # left ownerless exactly as if we had restored nothing at all.
+        self._prev_focus = top.focus_get() or top
+        self.grab_set()
+        self.focus_force()      # overrideredirect windows get no focus otherwise
+
+    def release(self):
+        prev_grab = getattr(self, "_prev_grab", None)
+        prev_focus = getattr(self, "_prev_focus", None)
+        try:
+            self.grab_release()
+        except tk.TclError:
+            pass
+        self.destroy()
+        for widget, restore in ((prev_grab, "grab_set"),
+                                (prev_grab, "focus_force"),
+                                (prev_focus, "focus_set")):
+            if widget is None or not str(widget):
+                continue
+            try:
+                if widget.winfo_exists():
+                    getattr(widget, restore)()
+            except tk.TclError:
+                pass
+
+
+class Dropdown(Popup):
     """A styled list that opens directly beneath its field.
 
     Tk's own tk_popup renders the native macOS context menu: it can't be
@@ -300,10 +339,6 @@ class Dropdown(tk.Toplevel):
     def __init__(self, anchor, items, on_pick, max_rows=8):
         super().__init__(anchor.winfo_toplevel())
         self.on_pick = on_pick
-        # Taking the grab below steals it from a modal parent; remember who had
-        # it so closing can hand it back, or that dialog silently stops being
-        # modal and the window behind it becomes clickable again.
-        self._prev_grab = anchor.winfo_toplevel().grab_current()
         # Hide while building. A Toplevel is mapped as soon as it exists, so
         # without this macOS first places it at its own default spot — which is
         # where it stays visible, to the side of the field it belongs under.
@@ -343,14 +378,13 @@ class Dropdown(tk.Toplevel):
 
         self.bind("<Escape>", lambda _e: self.close())
         self.bind("<Button-1>", self._outside, add="+")
-        self.grab_set()
-        # An overrideredirect window is not given focus by the window manager,
-        # so without this the Escape binding never receives a key event.
-        self.focus_force()
+        self.claim(anchor)
 
     def _pick(self, value):
-        self.on_pick(value)
+        # Close first: release() restores the previous focus, so a callback
+        # that wants the caret somewhere else has to run after it, not before.
         self.close()
+        self.on_pick(value)
 
     def _outside(self, event):
         # While grabbed, a click anywhere else is delivered here with
@@ -360,21 +394,10 @@ class Dropdown(tk.Toplevel):
             self.close()
 
     def close(self):
-        try:
-            self.grab_release()
-        except tk.TclError:
-            pass
-        prev = self._prev_grab
-        self.destroy()
-        if prev is not None and str(prev):
-            try:
-                if prev.winfo_exists():
-                    prev.grab_set()
-            except tk.TclError:
-                pass
+        self.release()
 
 
-class CalendarPopup(tk.Toplevel):
+class CalendarPopup(Popup):
     """A month grid that opens under its field.
 
     Tk ships no date widget and tkcalendar would be a new dependency, so this
@@ -391,7 +414,6 @@ class CalendarPopup(tk.Toplevel):
         self.shown = selected.replace(day=1)
         self.today = datetime.date.today()
         self.cal = calendar.Calendar(firstweekday=first_weekday)
-        self._prev_grab = anchor.winfo_toplevel().grab_current()
 
         self.withdraw()
         self.overrideredirect(True)
@@ -454,8 +476,7 @@ class CalendarPopup(tk.Toplevel):
         self.lift()
         self.bind("<Escape>", lambda _e: self.close())
         self.bind("<Button-1>", self._outside, add="+")
-        self.grab_set()
-        self.focus_force()
+        self.claim(anchor)
 
     def _month(self, step):
         m = self.shown.month + step
@@ -515,8 +536,10 @@ class CalendarPopup(tk.Toplevel):
         self._pick(d)
 
     def _pick(self, d):
-        self.on_pick(d)
+        # Close first, for the same reason as Dropdown._pick: release()
+        # restores the previous focus, so the callback has to run after it.
         self.close()
+        self.on_pick(d)
 
     def _outside(self, event):
         if event.widget is self and not (
@@ -524,18 +547,7 @@ class CalendarPopup(tk.Toplevel):
             self.close()
 
     def close(self):
-        try:
-            self.grab_release()
-        except tk.TclError:
-            pass
-        prev = self._prev_grab
-        self.destroy()
-        if prev is not None and str(prev):
-            try:
-                if prev.winfo_exists():
-                    prev.grab_set()
-            except tk.TclError:
-                pass
+        self.release()
 
 
 class ProjectPicker(tk.Frame):
@@ -564,7 +576,18 @@ class ProjectPicker(tk.Frame):
             return
         if not self.projects:
             return
-        self._menu = Dropdown(self, self.projects, self.var.set)
+        self._menu = Dropdown(self, self.projects, self._choose)
+
+    def _choose(self, value):
+        """Take the picked name and leave the caret in the field.
+
+        The field is editable, so picking a preset and then adjusting it is a
+        reasonable thing to do; without this the keyboard goes nowhere until
+        the field is clicked again.
+        """
+        self.var.set(value)
+        self.entry.focus_set()
+        self.entry.icursor("end")
 
     def get(self):
         return self.var.get().strip()
@@ -613,12 +636,16 @@ def sane_geometry(spec):
 
 
 def paused_row():
-    """Full paused row (project, start, end) or None."""
+    """The pause still in progress (project, start, end), or None.
+
+    Keyed on the newest '[Paused]' row rather than the newest row overall —
+    see db_logic.get_paused_timer() for why.
+    """
     with db_logic.get_db() as (conn, cursor):
         cursor.execute('''
             SELECT project_name, start_time, end_time FROM time_logs
-            WHERE id = (SELECT MAX(id) FROM time_logs)
-              AND is_active = 0 AND description = '[Paused]'
+            WHERE is_active = 0 AND description = '[Paused]'
+            ORDER BY id DESC LIMIT 1
         ''')
         row = cursor.fetchone()
     return None if not row else {"project_name": row[0], "start_time": row[1],
@@ -816,6 +843,23 @@ class Dialog(tk.Toplevel):
         box.pack(fill="both", expand=True)
         return box
 
+    def show(self, focus_widget=None):
+        """Become modal and take the keyboard, then block until dismissed.
+
+        grab_set() alone blocks clicks elsewhere without making the window the
+        key window, so for a moment nobody owns the keyboard: focus_get() comes
+        back None and typing does nothing until macOS promotes the window — a
+        click, or whenever the window manager gets round to it. That delay is
+        what made the Hours field feel dead on opening. focus_force() claims it
+        immediately, the same fix the dropdown and calendar popups already use.
+        """
+        self.update_idletasks()
+        self.grab_set()
+        self.focus_force()
+        if focus_widget is not None:
+            focus_widget.focus_set()
+        self.wait_window(self)
+
     def fit(self):
         """Resize to the content, bounded by the screen.
 
@@ -861,8 +905,7 @@ class Notice(Dialog):
         row.pack(fill="x", side="bottom")
         Button(row, "OK", self._cancel, tone="finish", height=BTN_H,
                size=BTN_SIZE, shadow=True).pack(fill="x")
-        self.grab_set()
-        self.wait_window(self)
+        self.show()
 
 
 class ConfirmDialog(Dialog):
@@ -883,8 +926,7 @@ class ConfirmDialog(Dialog):
         Button(row, confirm, self._ok, tone="danger", height=BTN_H,
                size=BTN_SIZE, shadow=True).grid(row=0, column=1, sticky="ew", padx=(5, 0))
         self.fit()
-        self.grab_set()
-        self.wait_window(self)
+        self.show()
 
     def _ok(self):
         self.result = True
@@ -910,8 +952,7 @@ class ChoiceDialog(Dialog):
             Button(self.body, label, lambda v=value: self._pick(v), tone=tone,
                    height=BTN_H, size=BTN_SIZE, shadow=True).pack(fill="x", pady=(0, 8))
         self.fit()
-        self.grab_set()
-        self.wait_window(self)
+        self.show()
 
     def _pick(self, value):
         self.result = value
@@ -967,9 +1008,7 @@ class AdjustStartDialog(Dialog):
         self.buttons("Save")
         self._preview()
         self.fit()
-        self.entry.focus_set()
-        self.grab_set()
-        self.wait_window(self)
+        self.show(self.entry)
 
     def _shift(self, minutes):
         self.new_start = self.new_start - datetime.timedelta(minutes=minutes)
@@ -1109,9 +1148,7 @@ class StopDialog(Dialog):
         self._sync_fields()
         self._refresh()
         self.fit()
-        self.box.focus_set()
-        self.grab_set()
-        self.wait_window(self)
+        self.show(self.box)
 
     def _field(self, parent, label, row, col, span=1):
         cell = tk.Frame(parent, bg=T["surface"])
@@ -1340,9 +1377,7 @@ class LogHoursDialog(Dialog):
 
         self._render_day()
         self.fit()
-        self.hours.focus_set()
-        self.grab_set()
-        self.wait_window(self)
+        self.show(self.hours)
 
     # ── Date ────────────────────────────────────────────────────────
     def _open_calendar(self):
@@ -1356,6 +1391,10 @@ class LogHoursDialog(Dialog):
         self.day = day
         self._cal = None
         self._render_day()
+        # _render_day resizes the dialog, which drops focus back to the window
+        # itself. Put the caret where the next keystroke belongs anyway.
+        self.hours.focus_set()
+        self.hours.icursor("end")
 
     def _render_day(self):
         self.lbl_day.config(text=self.day.strftime('%-d %b %Y'))

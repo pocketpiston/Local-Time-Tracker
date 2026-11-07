@@ -77,9 +77,10 @@ def stop_timer_with(description, start_iso=None, end_iso=None, project=None):
 
 
 def update_last_entry(description, start_iso=None, end_iso=None, project=None):
-    """Overwrite the newest row's description, and optionally times/project.
+    """Finalise the paused entry, optionally correcting times and project.
 
-    Finalises a '[Paused]' row, which is already closed in the database.
+    Targets the paused row, not MAX(id): a newer row — a manual entry, or one
+    added from the dashboard — would otherwise be overwritten instead.
     """
     with get_db() as (conn, cursor):
         cursor.execute('''
@@ -88,7 +89,10 @@ def update_last_entry(description, start_iso=None, end_iso=None, project=None):
                 start_time = COALESCE(?, start_time),
                 end_time = COALESCE(?, end_time),
                 project_name = COALESCE(?, project_name)
-            WHERE id = (SELECT MAX(id) FROM time_logs)
+            WHERE id = (
+                SELECT MAX(id) FROM time_logs
+                WHERE is_active = 0 AND description = '[Paused]'
+            )
         ''', (description, start_iso, end_iso, project))
 
 
@@ -106,14 +110,21 @@ def resume_paused_timer():
         ''')
 
 def get_paused_timer():
-    """Return the latest row if it is a paused one and no active timer exists.
-    Used on app startup to restore in-memory pause state."""
+    """Return the pause still in progress, if there is one.
+
+    Identified as the newest '[Paused]' row, NOT as the newest row overall.
+    Testing id = MAX(id) made the pause vanish as soon as anything else was
+    written — logging hours manually, or adding an entry from the dashboard —
+    stranding a row that could no longer be resumed or stopped. Resuming and
+    stopping both clear the placeholder, so any '[Paused]' row left in the
+    table is by definition an unfinished pause. This now matches the condition
+    resume_paused_timer() has always used.
+    """
     with get_db() as (conn, cursor):
         cursor.execute('''
             SELECT project_name, start_time FROM time_logs
-            WHERE id = (SELECT MAX(id) FROM time_logs)
-              AND is_active = 0
-              AND description = '[Paused]'
+            WHERE is_active = 0 AND description = '[Paused]'
+            ORDER BY id DESC LIMIT 1
         ''')
         row = cursor.fetchone()
         if row:
@@ -121,11 +132,20 @@ def get_paused_timer():
         return None
 
 def update_last_description(description):
+    """Finalise the paused entry by replacing its '[Paused]' placeholder.
+
+    Targets the paused row rather than MAX(id): with a newer row present this
+    used to write the description onto that one instead, so stopping a paused
+    timer overwrote an unrelated entry.
+    """
     with get_db() as (conn, cursor):
         cursor.execute('''
             UPDATE time_logs
             SET description = ?
-            WHERE id = (SELECT MAX(id) FROM time_logs)
+            WHERE id = (
+                SELECT MAX(id) FROM time_logs
+                WHERE is_active = 0 AND description = '[Paused]'
+            )
         ''', (description,))
 
 def get_active_timer():
@@ -173,9 +193,10 @@ def discard_active_timer():
     """Delete a running or just-paused timer without recording an entry.
 
     For a timer started by mistake. Returns the number of rows removed. The
-    paused branch is guarded on MAX(id) so it can only ever remove a paused row
-    that is still the newest one — the same condition get_paused_timer() uses
-    to decide a pause is current.
+    paused branch removes the same row get_paused_timer() reports, so whatever
+    the window shows as paused is what Discard takes away; keying it on MAX(id)
+    instead left the app offering to discard a pause it could not then delete.
+    Only a '[Paused]' placeholder is ever removed — never a finished entry.
     """
     with get_db() as (conn, cursor):
         cursor.execute('DELETE FROM time_logs WHERE is_active = 1')
@@ -183,9 +204,10 @@ def discard_active_timer():
         if not removed:
             cursor.execute('''
                 DELETE FROM time_logs
-                WHERE id = (SELECT MAX(id) FROM time_logs)
-                  AND is_active = 0
-                  AND description = '[Paused]'
+                WHERE id = (
+                    SELECT MAX(id) FROM time_logs
+                    WHERE is_active = 0 AND description = '[Paused]'
+                )
             ''')
             removed = cursor.rowcount or 0
     return removed

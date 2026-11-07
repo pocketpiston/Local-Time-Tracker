@@ -309,7 +309,33 @@ Two traps, both worth keeping in mind if the icon is ever replaced:
 
 The bundle points back at the project folder, so code edits need no rebuild.
 
-## 10. Known limitations
+## 10. Two bugs worth remembering
+
+**A pause was identified as "the newest row".** `get_paused_timer()` and
+`paused_row()` both tested `id = MAX(id) AND description = '[Paused]'`, so
+writing anything afterwards — logging hours manually, or adding an entry from
+the dashboard — made the pause vanish from the app while leaving its row in
+the table, unreachable. `update_last_description()` keyed on `MAX(id)` too, so
+finalising that pause wrote the description onto the *newer* entry instead.
+
+`resume_paused_timer()` had always had it right: the newest `[Paused]` row,
+with no requirement to be newest overall. Resuming and stopping both clear the
+placeholder, so a `[Paused]` row left in the table *is* an unfinished pause.
+All five call sites now agree on that, including discard.
+
+**Modal dialogs took the grab without taking the keyboard.** `grab_set()`
+blocks clicks elsewhere but does not make a window the key window, so for a
+moment `focus_get()` returned None and typing did nothing — the Hours field
+felt dead until macOS promoted the window, usually when the user clicked it.
+`Dialog.show()` now does grab, `focus_force()`, then focus the field, and
+every dialog goes through it. The dropdown and calendar popups had already hit
+this and carried their own `focus_force()`; the base class had not.
+
+Both were found by probing interactions rather than features — the first by
+combining pause with manual logging, the second by instrumenting what the real
+modal path does rather than trusting a test that had modality stubbed out.
+
+## 11. Known limitations
 
 - **Always on top** keeps the window above other *windows*, but Tk does not
   expose macOS's "show on all Spaces" behaviour, so it will not follow you to
