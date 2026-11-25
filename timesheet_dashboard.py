@@ -248,6 +248,7 @@ st.markdown("""
 def load_data():
     conn = sqlite3.connect(DB_NAME)
     df = pd.read_sql_query("SELECT * FROM time_logs", conn)
+    pauses = db_logic.pauses_by_log(conn.cursor())
     conn.close()
     
     if not df.empty:
@@ -255,8 +256,14 @@ def load_data():
         df['start_time'] = pd.to_datetime(df['start_time'], format='ISO8601')
         df['end_time'] = pd.to_datetime(df['end_time'], format='ISO8601')
         
-        # Calculate duration in hours
+        # Duration = worked time: the start→end span less any Pause/Resume
+        # breaks recorded in the pauses table (clipped to the entry).
         df['duration_hours'] = (df['end_time'] - df['start_time']).dt.total_seconds() / 3600.0
+        for i, row in df[df['id'].isin(list(pauses))].iterrows():
+            if pd.notna(row['start_time']) and pd.notna(row['end_time']):
+                df.at[i, 'duration_hours'] = db_logic.worked_seconds(
+                    row['start_time'].to_pydatetime(), row['end_time'].to_pydatetime(),
+                    pauses[int(row['id'])]) / 3600.0
         df.loc[df['duration_hours'] < 0, 'duration_hours'] = 0  # clamp negatives
     else:
         df['duration_hours'] = pd.Series(dtype=float)
@@ -280,6 +287,7 @@ def save_data(original_df, edited_df):
         current_ids = set()
         
     deleted_ids = original_ids - current_ids
+    db_logic.delete_pauses_for(deleted_ids, cursor)
     for d_id in deleted_ids:
         cursor.execute('DELETE FROM time_logs WHERE id = ?', (int(d_id),))
         
@@ -297,6 +305,7 @@ def save_data(original_df, edited_df):
             # Check if row is essentially empty
             if not proj.strip() and start_time is None and end_time is None and not desc.strip():
                 if not pd.isna(row['id']):
+                    db_logic.delete_pauses_for([row['id']], cursor)
                     cursor.execute('DELETE FROM time_logs WHERE id = ?', (int(row['id']),))
                 continue
             
@@ -645,7 +654,7 @@ with tab_logs:
             "end_time": st.column_config.DatetimeColumn("End Time", width="medium"),
             "description": st.column_config.TextColumn("Description", width="large"),
             "is_active": st.column_config.CheckboxColumn("Active", width="small"),
-            "duration_hours": st.column_config.NumberColumn("Hours", width="small", format="%.2f", disabled=True),
+            "duration_hours": st.column_config.NumberColumn("Hours", width="small", format="%.2f", disabled=True, help="Worked time: End − Start, less any breaks taken with Pause/Resume."),
         },
         column_order=["project_name", "start_time", "end_time", "duration_hours", "description", "is_active", "id"],
     )

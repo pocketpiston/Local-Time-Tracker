@@ -27,7 +27,7 @@ import db_logic
 # Billing rules are imported, never reimplemented, so the figures shown here
 # cannot drift away from what generate_invoice.py actually puts on the invoice.
 from generate_invoice import (EXCLUDE_PROJECTS, SPILLOVER_THRESHOLD_HOURS,
-                              classify, split_by_calendar_day)
+                              classify, split_by_calendar_day, worked_by_day)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROJECTS_FILE = os.path.join(HERE, 'projects.txt')
@@ -636,30 +636,30 @@ def sane_geometry(spec):
 
 
 def paused_row():
-    """The pause still in progress (project, start, end), or None.
+    """The pause still in progress (id, project, start, end, pauses), or None.
 
     Keyed on the newest '[Paused]' row rather than the newest row overall —
     see db_logic.get_paused_timer() for why.
     """
-    with db_logic.get_db() as (conn, cursor):
-        cursor.execute('''
-            SELECT project_name, start_time, end_time FROM time_logs
-            WHERE is_active = 0 AND description = '[Paused]'
-            ORDER BY id DESC LIMIT 1
-        ''')
-        row = cursor.fetchone()
-    return None if not row else {"project_name": row[0], "start_time": row[1],
-                                 "end_time": row[2]}
+    return db_logic.get_paused_timer()
 
 
 def _completed_rows():
+    """(project, start, end, description, pauses) for every finished entry."""
     with db_logic.get_db() as (conn, cursor):
         cursor.execute('''
-            SELECT project_name, start_time, end_time, description FROM time_logs
+            SELECT id, project_name, start_time, end_time, description FROM time_logs
             WHERE end_time IS NOT NULL AND start_time IS NOT NULL AND is_active = 0
               AND (description IS NULL OR description != '[Paused]')
         ''')
-        return cursor.fetchall()
+        rows = cursor.fetchall()
+        pauses = db_logic.pauses_by_log(cursor)
+    return [(p, s, e, d, pauses.get(i, [])) for i, p, s, e, d in rows]
+
+
+def worked(start, end, pauses=()):
+    """Worked time of an entry as a timedelta — the span minus its pauses."""
+    return datetime.timedelta(seconds=db_logic.worked_seconds(start, end, pauses))
 
 
 def period_totals():
@@ -668,10 +668,10 @@ def period_totals():
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     week_start = today_start - datetime.timedelta(days=today_start.weekday())
     today_h = week_h = 0.0
-    for _proj, s, e, _d in _completed_rows():
+    for _proj, s, e, _d, pauses in _completed_rows():
         try:
             start = datetime.datetime.fromisoformat(s)
-            hours = (datetime.datetime.fromisoformat(e) - start).total_seconds() / 3600.0
+            hours = db_logic.worked_seconds(start, e, pauses) / 3600.0
         except (TypeError, ValueError):
             continue
         if hours <= 0:
@@ -683,7 +683,7 @@ def period_totals():
     return today_h, week_h
 
 
-def day_shares(start, end):
+def day_shares(start, end, pauses=()):
     """[(day, hours)] for one session, the way the invoice apportions it.
 
     A session running past midnight is billed across both calendar days, except
@@ -691,7 +691,7 @@ def day_shares(start, end):
     rather than becoming a tiny line of its own. Attributing the whole session
     to its start date instead would misstate every overnight session.
     """
-    chunks = list(split_by_calendar_day(start, end))
+    chunks = worked_by_day(start, end, pauses)
     if not chunks:
         return []
     primary = chunks[0][0]
@@ -702,9 +702,9 @@ def day_shares(start, end):
     return sorted(shares.items())
 
 
-def session_share(start, end, day):
+def session_share(start, end, day, pauses=()):
     """Hours of one session that the invoice would bill on `day`."""
-    return next((h for d, h in day_shares(start, end) if d == day), 0.0)
+    return next((h for d, h in day_shares(start, end, pauses) if d == day), 0.0)
 
 
 def day_bucket(project, day, item_code=None):
@@ -716,7 +716,7 @@ def day_bucket(project, day, item_code=None):
     """
     total = 0.0
     codes = set()
-    for proj, s, e, desc in _completed_rows():
+    for proj, s, e, desc, pauses in _completed_rows():
         if proj != project:
             continue
         try:
@@ -726,7 +726,7 @@ def day_bucket(project, day, item_code=None):
             continue
         if end <= start:
             continue
-        share = session_share(start, end, day)
+        share = session_share(start, end, day, pauses)
         if share <= 0:
             continue
         code = classify(desc or "")
@@ -966,9 +966,10 @@ class AdjustStartDialog(Dialog):
     a few minutes after actually starting work.
     """
 
-    def __init__(self, parent, project, start_dt):
+    def __init__(self, parent, project, start_dt, pauses=()):
         super().__init__(parent, "Adjust Start", 380, 400)
         self.start_dt = start_dt
+        self.pauses = list(pauses)
         self.new_start = start_dt
 
         self.heading("Adjust start time")
@@ -1032,9 +1033,9 @@ class AdjustStartDialog(Dialog):
         self._preview()
 
     def _preview(self):
-        elapsed = datetime.datetime.now() - self.new_start
+        elapsed = worked(self.new_start, datetime.datetime.now(), self.pauses)
         self.lbl_preview.config(
-            text=f"Starts {self.new_start:%-I:%M %p}  ·  {fmt_elapsed(elapsed)} elapsed")
+            text=f"Starts {self.new_start:%-I:%M %p}  ·  {fmt_elapsed(elapsed)} worked")
 
     def _ok(self):
         now = datetime.datetime.now()
@@ -1057,7 +1058,7 @@ class StopDialog(Dialog):
     not the session, is what actually gets billed.
     """
 
-    def __init__(self, parent, project, start_dt, end_dt, projects=()):
+    def __init__(self, parent, project, start_dt, end_dt, projects=(), pauses=()):
         super().__init__(parent, "Stop Timer", 430, 660)
         # Vertically resizable as a backstop: fit() sizes to the content, but
         # on a short screen the user must still be able to reach Save.
@@ -1065,6 +1066,11 @@ class StopDialog(Dialog):
         self.project = project
         self.start_dt = start_dt
         self.end_dt = end_dt
+        # Breaks taken with Pause/Resume. They stay fixed while start/end are
+        # corrected below; work_periods() clips them to whatever range is set.
+        self.pauses = [(datetime.datetime.fromisoformat(a) if isinstance(a, str) else a,
+                        datetime.datetime.fromisoformat(b) if isinstance(b, str) else b)
+                       for a, b in pauses]
         self.adjust_open = False
         # Offer the presets plus whatever this entry is already on, in case it
         # was started as a one-off custom name.
@@ -1096,6 +1102,12 @@ class StopDialog(Dialog):
         self.lbl_range = tk.Label(inner, bg=T["surface"], fg=T["muted"],
                                   font=(UI, 13), anchor="w")
         self.lbl_range.pack(fill="x", pady=(8, 0))
+        # Period 1 + Period 2 … and the paused total, only when there was a pause.
+        self.lbl_periods = tk.Label(inner, bg=T["surface"], fg=T["muted"],
+                                    font=(UI, 11), anchor="w", justify="left",
+                                    wraplength=350)
+        if self.pauses:
+            self.lbl_periods.pack(fill="x", pady=(4, 0))
 
         tk.Frame(inner, bg=T["border"], height=1).pack(fill="x", pady=10)
 
@@ -1198,7 +1210,8 @@ class StopDialog(Dialog):
             entry.insert(0, value)
 
     def _hours(self):
-        return max((self.end_dt - self.start_dt).total_seconds() / 3600.0, 0.0)
+        """Worked hours: the start→end span less any pauses inside it."""
+        return db_logic.worked_seconds(self.start_dt, self.end_dt, self.pauses) / 3600.0
 
     def _from_clocks(self):
         try:
@@ -1232,7 +1245,8 @@ class StopDialog(Dialog):
             self.lbl_err.config(
                 text=f"That's over {MAX_SESSION_HOURS} h — check the figure.")
             return
-        self.end_dt = self.start_dt + datetime.timedelta(hours=hours)
+        # The duration is worked time, so the end moves past any pauses.
+        self.end_dt = db_logic.end_for_worked(self.start_dt, hours, self.pauses)
         self.lbl_err.config(text="")
         self.in_end.delete(0, "end")
         self.in_end.insert(0, self.end_dt.strftime('%-I:%M %p'))
@@ -1240,13 +1254,21 @@ class StopDialog(Dialog):
 
     def _refresh(self):
         session_h = self._hours()
-        self.lbl_clock.config(text=fmt_elapsed(self.end_dt - self.start_dt))
+        self.lbl_clock.config(text=fmt_elapsed(worked(self.start_dt, self.end_dt, self.pauses)))
         self.lbl_dec.config(text=f"{session_h:.2f} h")
         same_day = self.start_dt.date() == self.end_dt.date()
         self.lbl_range.config(
             text=f"{self.start_dt.strftime('%-I:%M %p')}  →  "
                  f"{self.end_dt.strftime('%-I:%M %p')}"
                  f"{'' if same_day else '  (next day)'}")
+        if self.pauses:
+            periods = db_logic.work_periods(self.start_dt, self.end_dt, self.pauses)
+            span = max(self.end_dt - self.start_dt, datetime.timedelta(0))
+            paused = span - worked(self.start_dt, self.end_dt, self.pauses)
+            lines = [f"Period {i}:  {a:%-I:%M %p} – {b:%-I:%M %p}  ({fmt_elapsed(b - a)})"
+                     for i, (a, b) in enumerate(periods, 1)]
+            lines.append(f"Paused {fmt_elapsed(paused)} — not counted")
+            self.lbl_periods.config(text="\n".join(lines))
 
         # The invoice derives the item code from the notes, so it is not shown
         # or warned about here — it changes as you type, and flagging it read
@@ -1263,8 +1285,8 @@ class StopDialog(Dialog):
         prior_same_code, codes_today = day_bucket(self.project, day, item_code=code)
         # Only the part of this session the invoice bills on `day` — an
         # overnight session is split across two days, not heaped on the first.
-        shares = day_shares(self.start_dt, self.end_dt)
-        this_day = session_share(self.start_dt, self.end_dt, day)
+        shares = day_shares(self.start_dt, self.end_dt, self.pauses)
+        this_day = session_share(self.start_dt, self.end_dt, day, self.pauses)
         bucket_raw = prior_same_code + this_day
         self.lbl_bucket.config(
             text=f"{self.project} {day:%b %-d}:  {bucket_raw:.2f} h  →  "
@@ -1809,17 +1831,23 @@ class TimerApp:
 
             if active:
                 start = datetime.datetime.fromisoformat(active["start_time"])
+                now = datetime.datetime.now()
+                pauses = active.get("pauses") or []
+                meta = f"Started {start.strftime('%-I:%M %p')}"
+                if pauses:
+                    off = (now - start) - worked(start, now, pauses)
+                    meta += f" · paused {fmt_elapsed(off)}"
                 s.update(mode="running", state="RUNNING", colour=T["running"],
                          label_colour=T["runlabel"], project=active["project_name"],
-                         clock=fmt_elapsed(datetime.datetime.now() - start),
-                         clock_colour=T["text"],
-                         meta=f"Started {start.strftime('%-I:%M %p')}")
+                         clock=fmt_elapsed(worked(start, now, pauses)),
+                         clock_colour=T["text"], meta=meta)
             elif paused:
                 start = datetime.datetime.fromisoformat(paused["start_time"])
                 end = datetime.datetime.fromisoformat(paused["end_time"])
                 s.update(mode="paused", state="PAUSED", colour=T["paused"],
                          label_colour=T["pauselbl"], project=paused["project_name"],
-                         clock=fmt_elapsed(end - start), clock_colour=T["muted"],
+                         clock=fmt_elapsed(worked(start, end, paused["pauses"])),
+                         clock_colour=T["muted"],
                          meta=f"Paused at {end.strftime('%-I:%M %p')}")
             else:
                 last = db_logic.get_last_ended_timer()
@@ -1885,7 +1913,8 @@ class TimerApp:
             start = datetime.datetime.fromisoformat(paused["start_time"])
             end = datetime.datetime.fromisoformat(paused["end_time"])
 
-        dlg = StopDialog(self.root, project, start, end, self.projects)
+        pauses = (active or paused)["pauses"]
+        dlg = StopDialog(self.root, project, start, end, self.projects, pauses)
         if dlg.result is None:
             return  # cancelled — leave the timer alone
         desc, start_iso, end_iso, proj = dlg.result
@@ -1913,7 +1942,7 @@ class TimerApp:
                    "Resume the timer first, then adjust its start time.")
             return
         start = datetime.datetime.fromisoformat(row["start_time"])
-        dlg = AdjustStartDialog(self.root, row["project_name"], start)
+        dlg = AdjustStartDialog(self.root, row["project_name"], start, row["pauses"])
         if dlg.result is None:
             return
         self._guard(lambda: db_logic.set_active_start_time(dlg.result),
@@ -1928,7 +1957,8 @@ class TimerApp:
             Notice(self.root, "Nothing running", "There's no timer to discard.")
             return
         start = datetime.datetime.fromisoformat(row["start_time"])
-        elapsed = fmt_elapsed(datetime.datetime.now() - start)
+        elapsed = fmt_elapsed(worked(start, row.get("end_time") or datetime.datetime.now(),
+                                     row["pauses"]))
         dlg = ConfirmDialog(
             self.root, "Discard this timer?",
             f"{row['project_name']} — {elapsed} since {start:%-I:%M %p}.\n\n"
@@ -1971,7 +2001,8 @@ class TimerApp:
             state = "running" if active else "paused"
             choice = ChoiceDialog(
                 self.root, "A timer is still going",
-                f"{row['project_name']} — {fmt_elapsed(datetime.datetime.now() - start)} "
+                f"{row['project_name']} — "
+                f"{fmt_elapsed(worked(start, row.get('end_time') or datetime.datetime.now(), row['pauses']))} "
                 f"{state} since {start:%-I:%M %p}, not yet saved as an entry.\n\n"
                 f"Leaving it keeps it {state}; it will still be there next time.",
                 [("Leave it " + state, "leave", "primary"),

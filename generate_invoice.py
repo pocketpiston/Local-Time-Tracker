@@ -36,6 +36,8 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
+import db_logic
+
 HERE = Path(__file__).resolve().parent
 DB_PATH = HERE / "time_tracker.db"
 
@@ -106,16 +108,17 @@ def parse_month_arg(value: str, today: dt.date) -> tuple[int, int]:
     return y, mo
 
 
-def fetch_entries(month_start: dt.datetime, next_month_start: dt.datetime) -> list[tuple[str, str, str, str]]:
-    """Return rows (project, start_iso, end_iso, description) for any session whose
-    [start, end) interval overlaps the month. Cross-boundary sessions are clipped
-    in aggregate_by_day so only the in-month portion is billed.
+def fetch_entries(month_start: dt.datetime, next_month_start: dt.datetime) -> list[tuple]:
+    """Return rows (project, start_iso, end_iso, description, pauses) for any
+    session whose [start, end) interval overlaps the month. Cross-boundary
+    sessions are clipped in aggregate_by_day so only the in-month portion is
+    billed; `pauses` are the breaks taken with Pause/Resume, never billed.
     """
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT project_name, start_time, end_time, COALESCE(description, '')
+            SELECT id, project_name, start_time, end_time, COALESCE(description, '')
             FROM time_logs
             WHERE end_time IS NOT NULL
               AND start_time < ?
@@ -124,7 +127,9 @@ def fetch_entries(month_start: dt.datetime, next_month_start: dt.datetime) -> li
             """,
             (next_month_start.isoformat(), month_start.isoformat()),
         )
-        return cur.fetchall()
+        rows = cur.fetchall()
+        pauses = db_logic.pauses_by_log(cur)
+    return [(p, s, e, d, pauses.get(i, [])) for i, p, s, e, d in rows]
 
 
 def split_by_calendar_day(start: dt.datetime, end: dt.datetime):
@@ -142,6 +147,18 @@ def split_by_calendar_day(start: dt.datetime, end: dt.datetime):
         cur = chunk_end
 
 
+def worked_by_day(start: dt.datetime, end: dt.datetime, pauses=()):
+    """[(date, hours)] worked per calendar day, oldest first, pauses excluded.
+
+    11:30 → 13:30 with a 12:00 → 13:00 pause is [(day, 1.0)], not 2.0.
+    """
+    by_day: dict = {}
+    for ps, pe in db_logic.work_periods(start, end, pauses):
+        for day, hours in split_by_calendar_day(ps, pe):
+            by_day[day] = by_day.get(day, 0.0) + hours
+    return sorted(by_day.items())
+
+
 def aggregate_by_day(rows, month_start: dt.datetime, next_month_start: dt.datetime) -> list[dict]:
     """Group by (date, project, item_code). Returns list sorted by date then project.
 
@@ -152,7 +169,9 @@ def aggregate_by_day(rows, month_start: dt.datetime, next_month_start: dt.dateti
     buckets: dict[tuple, dict] = defaultdict(
         lambda: {"hours": 0.0, "descs": []}
     )
-    for project, start_iso, end_iso, desc in rows:
+    for row in rows:
+        project, start_iso, end_iso, desc = row[:4]
+        pauses = row[4] if len(row) > 4 else ()
         if project in EXCLUDE_PROJECTS:
             continue
         if desc.strip() == "[Paused]":
@@ -167,7 +186,7 @@ def aggregate_by_day(rows, month_start: dt.datetime, next_month_start: dt.dateti
             continue
         item = classify(desc)
         clean = desc.strip()
-        chunks = list(split_by_calendar_day(start, end))
+        chunks = worked_by_day(start, end, pauses)
         if not chunks:
             continue
         primary_day = chunks[0][0]
