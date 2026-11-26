@@ -32,15 +32,19 @@ def load_projects():
 class TimeTrackerApp(rumps.App):
     def __init__(self):
         super(TimeTrackerApp, self).__init__("⏱️ Idle")
-        self.paused_project = None
-        # Restore pause state if the app was quit mid-pause
-        paused = db_logic.get_paused_timer()
-        if paused:
-            self.paused_project = paused["project_name"]
         self.build_menu()
         # Auto-refresh title every 60 seconds to keep elapsed time current
         self.timer = rumps.Timer(self.tick, 60)
         self.timer.start()
+
+    @property
+    def paused_project(self):
+        """Read from the DB every time, never cached: the timer window pauses
+        and resumes the same rows, and a local flag fell out of step with it."""
+        if db_logic.get_active_timer():
+            return None
+        paused = db_logic.get_paused_timer()
+        return paused["project_name"] if paused else None
 
     def tick(self, sender):
         self.update_ui_state()
@@ -92,9 +96,17 @@ class TimeTrackerApp(rumps.App):
 
     def update_ui_state(self):
         # Handle Paused state locally
-        if self.paused_project:
-            self.title = f"⏸️ {self.paused_project}"
-            self.status_item.title = "Status: Paused"
+        # A running timer wins over a stranded pause, as in the timer window.
+        paused = None if db_logic.get_active_timer() else db_logic.get_paused_timer()
+        if paused:
+            self.title = f"⏸️ {paused['project_name']}"
+            try:
+                done = db_logic.worked_seconds(paused["start_time"], paused["end_time"],
+                                               paused["pauses"])
+                h, m = divmod(int(done) // 60, 60)
+                self.status_item.title = f"Paused at {format_time(paused['end_time'])} ({h}h {m}m worked)"
+            except Exception:
+                self.status_item.title = "Status: Paused"
             self.pause_button.title = "Resume Timer"
             return
 
@@ -106,9 +118,10 @@ class TimeTrackerApp(rumps.App):
             start_str = format_time(active["start_time"])
             # Show elapsed time in the menu bar
             try:
-                start_dt = datetime.fromisoformat(active["start_time"])
-                elapsed = datetime.now() - start_dt
-                hours, remainder = divmod(int(elapsed.total_seconds()), 3600)
+                # Worked time only: breaks taken with Pause/Resume are excluded.
+                elapsed = db_logic.worked_seconds(active["start_time"], datetime.now(),
+                                                  active["pauses"])
+                hours, remainder = divmod(int(elapsed), 3600)
                 mins = remainder // 60
                 self.title = f"⏱️ {proj} ({hours}h {mins}m)"
             except Exception:
@@ -149,8 +162,7 @@ class TimeTrackerApp(rumps.App):
 
     def toggle_pause(self, sender):
         if self.paused_project:
-            # Resume by reopening the paused row so the original start_time is preserved
-            self.paused_project = None
+            # Reopen the paused row; the break is recorded so it isn't counted
             db_logic.resume_paused_timer()
             self.build_menu()
         else:
@@ -160,7 +172,6 @@ class TimeTrackerApp(rumps.App):
                 rumps.alert("No active timer to pause.")
                 return
 
-            self.paused_project = active["project_name"]
             # Silently stop timer in DB with a placeholder description
             db_logic.stop_timer("[Paused]")
             self.build_menu()
@@ -291,7 +302,6 @@ class TimeTrackerApp(rumps.App):
         self.build_menu()
 
     def _start_timer_logic(self, project_name, start_time=None):
-        self.paused_project = None # Clear any pause state
         active = db_logic.get_active_timer()
         if active:
             # Confirm before switching to a different project
@@ -311,7 +321,6 @@ class TimeTrackerApp(rumps.App):
 
     def stop_project_timer(self, sender, force=False):
         was_paused = self.paused_project is not None
-        self.paused_project = None # Clear pause state entirely
         
         if not db_logic.get_active_timer() and not was_paused:
             if not force:

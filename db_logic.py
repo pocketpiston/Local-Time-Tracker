@@ -3,6 +3,8 @@ import datetime
 import os
 from contextlib import contextmanager
 
+PAUSED = '[Paused]'
+
 DB_NAME = os.path.join(os.path.dirname(__file__), 'time_tracker.db')
 
 @contextmanager
@@ -31,10 +33,113 @@ def init_db():
                 is_active BOOLEAN
             )
         ''')
+        # One row per finished break inside an entry. Additive migration: rows
+        # logged before this table existed simply have no pauses, so their
+        # duration (end - start) is unchanged.
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS pauses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                log_id INTEGER NOT NULL REFERENCES time_logs(id) ON DELETE CASCADE,
+                pause_start TEXT NOT NULL,
+                pause_end TEXT NOT NULL
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_pauses_log ON pauses(log_id)')
+
+
+# ── Worked time ────────────────────────────────────────────────────
+# An entry is one row spanning start_time → end_time. Breaks taken with
+# Pause/Resume are stored in `pauses` and are NOT worked time. Everything that
+# turns an entry into hours goes through these helpers.
+
+def _dt(value):
+    if value is None or isinstance(value, datetime.datetime):
+        return value
+    return datetime.datetime.fromisoformat(value)
+
+
+def work_periods(start, end, pauses=()):
+    """The worked intervals of [start, end) once the pauses are cut out.
+
+    11:30→13:30 with a 12:00→13:00 pause gives [(11:30, 12:00), (13:00, 13:30)].
+    Pauses are clipped to the entry, so moving its start or end past a pause
+    (stop dialog, dashboard edit) never produces negative time.
+    """
+    start, end = _dt(start), _dt(end)
+    if start is None or end is None or end <= start:
+        return []
+    periods, cur = [], start
+    for ps, pe in sorted((_dt(a), _dt(b)) for a, b in pauses):
+        ps, pe = max(ps, start), min(pe, end)
+        if pe <= ps or pe <= cur:
+            continue
+        if ps > cur:
+            periods.append((cur, ps))
+        cur = max(cur, pe)
+    if cur < end:
+        periods.append((cur, end))
+    return periods
+
+
+def worked_seconds(start, end, pauses=()):
+    return sum((e - s).total_seconds() for s, e in work_periods(start, end, pauses))
+
+
+def end_for_worked(start, hours, pauses=()):
+    """The end time at which an entry starting at `start` has `hours` worked.
+
+    Used when a duration is typed: 1.0 h from 11:30 with a 12:00→13:00 break
+    ends at 13:30, not 12:30.
+    """
+    cur = _dt(start)
+    remaining = datetime.timedelta(hours=hours)
+    for ps, pe in sorted((_dt(a), _dt(b)) for a, b in pauses):
+        if pe <= cur:
+            continue
+        ps = max(ps, cur)
+        if cur + remaining <= ps:
+            break
+        remaining -= ps - cur
+        cur = pe
+    return cur + remaining
+
+
+def fmt_periods(start, end, pauses=()):
+    """'11:30 AM–12:00 PM + 1:00–1:30 PM' — the worked periods, for display."""
+    def t(d):
+        return d.strftime('%-I:%M %p')
+    return " + ".join(f"{t(a)}–{t(b)}" for a, b in work_periods(start, end, pauses))
+
+
+def get_pauses(log_id, cursor=None):
+    """[(pause_start, pause_end)] ISO strings for one entry, oldest first."""
+    if cursor is None:
+        with get_db() as (_conn, cur):
+            return get_pauses(log_id, cur)
+    cursor.execute('SELECT pause_start, pause_end FROM pauses WHERE log_id = ? '
+                   'ORDER BY pause_start', (log_id,))
+    return cursor.fetchall()
+
+
+def pauses_by_log(cursor=None):
+    """{log_id: [(pause_start, pause_end), ...]} for every entry with a pause."""
+    if cursor is None:
+        with get_db() as (_conn, cur):
+            return pauses_by_log(cur)
+    cursor.execute('SELECT log_id, pause_start, pause_end FROM pauses ORDER BY pause_start')
+    out = {}
+    for log_id, ps, pe in cursor.fetchall():
+        out.setdefault(log_id, []).append((ps, pe))
+    return out
+
+
+def _now():
+    """Single clock seam so tests can pin the time."""
+    return datetime.datetime.now()
 
 def start_timer(project_name, start_time=None):
     if start_time is None:
-        start_time = datetime.datetime.now().isoformat()
+        start_time = _now().isoformat()
     with get_db() as (conn, cursor):
         # Safety: stop any orphaned active timers first
         cursor.execute('''
@@ -48,7 +153,7 @@ def start_timer(project_name, start_time=None):
         ''', (project_name, start_time))
 
 def stop_timer(description):
-    end_time = datetime.datetime.now().isoformat()
+    end_time = _now().isoformat()
     with get_db() as (conn, cursor):
         cursor.execute('''
             UPDATE time_logs
@@ -63,7 +168,7 @@ def stop_timer_with(description, start_iso=None, end_iso=None, project=None):
     session before saving it. Any argument left as None keeps the stored value.
     """
     if end_iso is None:
-        end_iso = datetime.datetime.now().isoformat()
+        end_iso = _now().isoformat()
     with get_db() as (conn, cursor):
         cursor.execute('''
             UPDATE time_logs
@@ -97,17 +202,32 @@ def update_last_entry(description, start_iso=None, end_iso=None, project=None):
 
 
 def resume_paused_timer():
-    """Reopen the most recent paused row: clear end_time/description, set is_active=1.
-    Preserves the original start_time so elapsed time spans the pause gap."""
+    """Reopen the paused entry and record the break it just finished.
+
+    The row keeps its original start_time (it is still one entry), but the gap
+    from the moment it was paused (its end_time) to now goes into `pauses`, so
+    worked time is Period 1 + Period 2, not the whole span. Before the pauses
+    table existed this simply reopened the row, which counted the break as work.
+    """
+    now = _now().isoformat()
     with get_db() as (conn, cursor):
         cursor.execute('''
-            UPDATE time_logs
-            SET end_time = NULL, description = NULL, is_active = 1
-            WHERE id = (
-                SELECT MAX(id) FROM time_logs
-                WHERE is_active = 0 AND description = '[Paused]'
-            )
-        ''')
+            SELECT id, end_time FROM time_logs
+            WHERE is_active = 0 AND description = ?
+            ORDER BY id DESC LIMIT 1
+        ''', (PAUSED,))
+        row = cursor.fetchone()
+        if not row:
+            return False
+        log_id, paused_at = row
+        if paused_at and paused_at < now:
+            cursor.execute('INSERT INTO pauses (log_id, pause_start, pause_end) '
+                           'VALUES (?, ?, ?)', (log_id, paused_at, now))
+        cursor.execute('''
+            UPDATE time_logs SET end_time = NULL, description = NULL, is_active = 1
+            WHERE id = ?
+        ''', (log_id,))
+        return True
 
 def get_paused_timer():
     """Return the pause still in progress, if there is one.
@@ -122,13 +242,14 @@ def get_paused_timer():
     """
     with get_db() as (conn, cursor):
         cursor.execute('''
-            SELECT project_name, start_time FROM time_logs
+            SELECT id, project_name, start_time, end_time FROM time_logs
             WHERE is_active = 0 AND description = '[Paused]'
             ORDER BY id DESC LIMIT 1
         ''')
         row = cursor.fetchone()
         if row:
-            return {"project_name": row[0], "start_time": row[1]}
+            return {"id": row[0], "project_name": row[1], "start_time": row[2],
+                    "end_time": row[3], "pauses": get_pauses(row[0], cursor)}
         return None
 
 def update_last_description(description):
@@ -151,12 +272,13 @@ def update_last_description(description):
 def get_active_timer():
     with get_db() as (conn, cursor):
         cursor.execute('''
-            SELECT project_name, start_time FROM time_logs WHERE is_active = 1
+            SELECT id, project_name, start_time FROM time_logs WHERE is_active = 1
             ORDER BY id DESC LIMIT 1
         ''')
         row = cursor.fetchone()
         if row:
-            return {"project_name": row[0], "start_time": row[1]}
+            return {"id": row[0], "project_name": row[1], "start_time": row[2],
+                    "pauses": get_pauses(row[0], cursor)}
         return None
 
 def get_last_ended_timer():
@@ -181,7 +303,7 @@ def add_manual_log(project_name, hours, description="", end_time=None):
     """Insert a completed (non-active) entry whose duration is `hours` hours,
     ending at end_time (defaults to now)."""
     if end_time is None:
-        end_time = datetime.datetime.now()
+        end_time = _now()
     start_time = end_time - datetime.timedelta(hours=hours)
     with get_db() as (conn, cursor):
         cursor.execute('''
@@ -199,18 +321,25 @@ def discard_active_timer():
     Only a '[Paused]' placeholder is ever removed — never a finished entry.
     """
     with get_db() as (conn, cursor):
-        cursor.execute('DELETE FROM time_logs WHERE is_active = 1')
-        removed = cursor.rowcount or 0
-        if not removed:
+        cursor.execute('SELECT id FROM time_logs WHERE is_active = 1')
+        ids = [r[0] for r in cursor.fetchall()]
+        if not ids:
             cursor.execute('''
-                DELETE FROM time_logs
-                WHERE id = (
-                    SELECT MAX(id) FROM time_logs
-                    WHERE is_active = 0 AND description = '[Paused]'
-                )
+                SELECT MAX(id) FROM time_logs
+                WHERE is_active = 0 AND description = '[Paused]'
             ''')
-            removed = cursor.rowcount or 0
+            ids = [r[0] for r in cursor.fetchall() if r[0] is not None]
+        for log_id in ids:
+            cursor.execute('DELETE FROM pauses WHERE log_id = ?', (log_id,))
+            cursor.execute('DELETE FROM time_logs WHERE id = ?', (log_id,))
+        removed = len(ids)
     return removed
+
+
+def delete_pauses_for(log_ids, cursor):
+    """Drop the breaks of deleted entries (SQLite leaves FKs unenforced)."""
+    for log_id in log_ids:
+        cursor.execute('DELETE FROM pauses WHERE log_id = ?', (int(log_id),))
 
 
 def get_all_active_timers():

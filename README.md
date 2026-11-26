@@ -122,7 +122,7 @@ Simply double-click your new "Time Tracker" app. The `⏱️ Idle` icon will qui
   * minutes: `45`, `15m`, `15mins`
   * hours: `2h`, `1.5h`, `2hours`
   * an absolute start time: `10:30`
-* **Pause / Stop Timer** — stopping prompts you for a description of what you worked on.
+* **Pause / Stop Timer** — stopping prompts you for a description of what you worked on. Time spent paused is not counted (the menu shows worked time, and *Paused at …* while paused).
 
 **After pulling code changes**, quit and relaunch the app. A running copy holds the old code in memory, so fixes won't take effect until it restarts:
 ```bash
@@ -151,7 +151,7 @@ Two ways to switch:
 **What's in the window:**
 * Big live elapsed-time readout plus the current project and start time.
 * **Start Timer** when idle — pick a preset from the dropdown or type any project name.
-* **Pause / Resume** and **Stop** (see the stop dialog below).
+* **Pause / Resume** and **Stop** (see the stop dialog below). Paused time is never counted: pause at 12:00, resume at 13:00, stop at 13:30 on a timer started at 11:30, and the entry is **1.0 h** (11:30–12:00 + 13:00–13:30), not 2.0 h. While running after a pause, the readout shows worked time and the line beneath it shows how long you've been paused. See *How pausing is stored* below.
 * **Adjust start** — pulls a running timer's start time backwards, for when you began working before you remembered to hit start. Quick −5 / −15 / −30 buttons, or type the same forms the menu bar app accepts: `45`, `15m`, `2h`, `1.5h`, or a time like `10:30`.
 * **Discard** — deletes a timer started by mistake without logging anything. Asks first, and names the project and elapsed time so you know what you're throwing away.
 * **➕ Log Hours Manually** — project, **date**, hours (e.g. `5.5`), and an optional description. Click the date field to pick from a calendar; future days are shown but not selectable. Entries on today end at the current time, earlier days end at 5:00 PM. A live preview shows the resulting span and what the day will bill, including hours already logged against it.
@@ -169,9 +169,23 @@ It polls the database once a second, so timers started from the menu bar app sho
    ```
    These are two numbers on purpose. `generate_invoice.py` rounds up the **daily bucket**, not each session, so a per-session figure would over-bill. The app imports the rounding rule and `classify()` from the invoice script so the two can't drift apart.
 2. **Lets you correct the entry** before saving — hit **Adjust** to edit the start, the end, the duration, or the **project**; everything else recalculates live, including the billable figure, which changes when you switch project. The time editing exists because several entries in the database carry corrections written into the notes instead ("Adjust to 2 hr 15 min for total session").
+   If the timer was paused, the dialog also lists each work period and the paused total:
+   ```
+   Period 1:  11:30 AM – 12:00 PM  (0:30:00)
+   Period 2:  1:00 PM – 1:30 PM  (0:30:00)
+   Paused 1:00:00 — not counted
+   ```
+   Typing a duration under **Adjust** means *worked* hours, so the end time is pushed past any pauses.
 3. **Takes multi-line notes.** The invoice derives the item code (Meeting / Drafting / Research) from keywords in what you write, so the code isn't shown or second-guessed here — it follows the text.
 
 Closing the dialog with notes typed asks before discarding them, and quitting the app with a timer still going offers to leave it running, stop and save it, or discard it.
+
+**How pausing is stored.** An entry stays one row in `time_logs` (`start_time` → `end_time`); each finished break is a row in a separate `pauses` table (`log_id`, `pause_start`, `pause_end`). Pausing closes the entry with a `[Paused]` placeholder as before; **Resume** records the gap from the pause to now in `pauses` and reopens the row. Every figure — the live clock, the stop dialog, Today / This Week, the dashboard's Hours column, and the invoice — is `end − start` minus the pauses inside that range (`db_logic.worked_seconds()`), so they always agree. Breaks are clipped to the entry, so correcting its start or end never goes negative. The table is created automatically on first launch; entries logged before it existed have no pauses and keep their hours, but any that were paused and resumed under the old code still include their break and need correcting by hand in the dashboard. The menu bar app reads pause state from the database on every refresh, so pausing in one app shows up in the other.
+
+Run the pause tests (they use a temporary database, never `time_tracker.db`):
+```bash
+python3 -m unittest test_pauses -v
+```
 
 **Make it a real Mac app (one-time):**
 ```bash

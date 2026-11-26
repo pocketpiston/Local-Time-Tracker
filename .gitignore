@@ -33,3 +33,6 @@ dist/
 .vscode/
 .idea/
 .claude/
+
+# Local database backups (contain billing data)
+*.bak
